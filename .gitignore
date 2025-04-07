@@ -44,3 +44,4 @@ context_audio.wav
 # Model files
 *.pt
 *.ckpt
+Orpheus-3b-AWQ
