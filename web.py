@@ -5,10 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 import struct
 import asyncio
 from typing import Iterator
+import os
 
 app = FastAPI()
-model = OrpheusModel(model_name="./Orpheus-3b-AWQ", tokenizer="./Orpheus-3b-AWQ")
-executor = ThreadPoolExecutor()
+model = OrpheusModel(model_name="heydryft/Orpheus-3b-FT-AWQ", tokenizer="heydryft/Orpheus-3b-FT-AWQ")
+
+num_threads = os.cpu_count()
+executor = ThreadPoolExecutor(max_workers=num_threads)
 
 def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> bytes:
     byte_rate = sample_rate * channels * bits_per_sample // 8
@@ -34,13 +37,19 @@ def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> byte
 async def stream_audio(prompt: str, voice: str):
     yield create_wav_header()
 
+    generator_instance = model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192)
     loop = asyncio.get_event_loop()
 
-    def generate_chunks():
-        for chunk in model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192):
-            yield chunk
+    def get_next_chunk(gen):
+        try:
+            return next(gen)
+        except StopIteration:
+            return None
 
-    for chunk in await loop.run_in_executor(executor, lambda: generate_chunks()):
+    while True:
+        chunk = await loop.run_in_executor(executor, get_next_chunk, generator_instance)
+        if chunk is None:
+            break
         yield chunk
 
 
