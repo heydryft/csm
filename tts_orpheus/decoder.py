@@ -80,8 +80,6 @@ def turn_token_into_id(token_string, index):
 async def tokens_decoder(token_gen):
     buffer = []
     count = 0
-    batch_size = 56  # Process two chunks at once (28*2) for better efficiency
-    
     async for token_sim in token_gen:       
         token = turn_token_into_id(token_sim, count)
         if token is None:
@@ -91,14 +89,11 @@ async def tokens_decoder(token_gen):
                 buffer.append(token)
                 count += 1
 
-                # Process in larger batches for better efficiency
-                if count % 7 == 0 and len(buffer) >= batch_size:
-                    # Process multiple chunks at once
-                    for i in range(len(buffer) - batch_size + 28, len(buffer) - 27, 28):
-                        buffer_to_proc = buffer[i:i+28]
-                        audio_samples = convert_to_audio(buffer_to_proc, count)
-                        if audio_samples is not None:
-                            yield audio_samples
+                if count % 7 == 0 and count > 27:
+                    buffer_to_proc = buffer[-28:]
+                    audio_samples = convert_to_audio(buffer_to_proc, count)
+                    if audio_samples is not None:
+                        yield audio_samples
 
 # ------------------ Synchronous Tokens Decoder Wrapper ------------------ #
 def tokens_decoder_sync(syn_token_gen):

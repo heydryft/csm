@@ -5,7 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 prompts = [
-    """Alright, Jish.. I'm Muse. And, uh... yeah, I'm here to talk like we're actually in the room together, y'know? <chuckle> Let's keep it real..""",
+    "Oh man... okay, so—there was this one time I, uh, totally bombed a group presentation 'cause I thought it was next week.. <groan> I showed up in, like, pajama pants... no slides... and just stood there smiling like a deer in headlights.. My group? Yeah—they never let me live it down.. <chuckle>",
 ]
 
 def generate_and_save(prompt: str, index: int, voice: str):
@@ -39,14 +39,14 @@ def generate_and_save(prompt: str, index: int, voice: str):
 
 def main():
     global model
-    model = OrpheusModel()
+    model = OrpheusModel(model_name="heydryft/Orpheus-3b-FT-AWQ", tokenizer="heydryft/Orpheus-3b-FT-AWQ")
 
     start_all = time.monotonic()
     results = []
     print("Starting generation for prompts")
     voices = ["zoe", "zac", "jess", "leo", "mia", "julia", "leah"]
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(generate_and_save, prompt, "tara", idx) for idx, prompt in enumerate(prompts)]
+        futures = [executor.submit(generate_and_save, prompt, idx, voices[idx % len(voices)]) for idx, prompt in enumerate(prompts)]
         for future in as_completed(futures):
             results.append(future.result())
 

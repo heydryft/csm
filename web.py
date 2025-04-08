@@ -5,6 +5,7 @@ from tts_orpheus import OrpheusModel
 import struct
 import asyncio
 import os
+import wave
 
 app = FastAPI()
 model = OrpheusModel(model_name="heydryft/Orpheus-3b-FT-AWQ", tokenizer="heydryft/Orpheus-3b-FT-AWQ")
@@ -46,26 +47,33 @@ async def stream_audio(prompt: str, voice: str):
     buffer_size = 4096  # Larger buffer size for more efficient streaming
     audio_buffer = bytearray()
 
-    async for chunk in model.generate_speech_async(prompt=prompt, voice=voice, max_tokens=8192):
-        if chunk is None:
-            break
+    with wave.open(f"output_{current_stream_idx}.wav", "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+
+        for chunk in model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192):
+            if chunk is None:
+                break
             
-        # Add to buffer
-        audio_buffer.extend(chunk)
+            # Add to buffer
+            audio_buffer.extend(chunk)
+            
+            # Only yield when buffer reaches threshold for more efficient streaming
+            if len(audio_buffer) >= buffer_size:
+                if time_to_first_byte is None:
+                    time_to_first_byte = time.monotonic() - start_time
+                yield bytes(audio_buffer)
+                wf.writeframes(audio_buffer)
+                frame_count = len(audio_buffer) // 2
+                total_frames += frame_count
+                audio_buffer = bytearray()
         
-        # Only yield when buffer reaches threshold for more efficient streaming
-        if len(audio_buffer) >= buffer_size:
-            if time_to_first_byte is None:
-                time_to_first_byte = time.monotonic() - start_time
+        # Send any remaining audio in the buffer
+        if audio_buffer:
             yield bytes(audio_buffer)
-            frame_count = len(audio_buffer) // 2
-            total_frames += frame_count
-            audio_buffer = bytearray()
-    
-    # Send any remaining audio in the buffer
-    if audio_buffer:
-        yield bytes(audio_buffer)
-        total_frames += len(audio_buffer) // 2
+            total_frames += len(audio_buffer) // 2
+            wf.writeframes(audio_buffer)
 
     duration = total_frames / 24000
     end_time = time.monotonic()
