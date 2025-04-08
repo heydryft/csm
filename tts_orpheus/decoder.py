@@ -17,40 +17,27 @@ def convert_to_audio(multiframe, count):
   if len(multiframe) < 7:
     return
   
-  codes_0 = torch.tensor([], device=snac_device, dtype=torch.int32)
-  codes_1 = torch.tensor([], device=snac_device, dtype=torch.int32)
-  codes_2 = torch.tensor([], device=snac_device, dtype=torch.int32)
-
+  # Pre-allocate tensors with the right size instead of concatenating repeatedly
   num_frames = len(multiframe) // 7
   frame = multiframe[:num_frames*7]
 
+  # Create arrays to hold the codes
+  codes_0_list = []
+  codes_1_list = []
+  codes_2_list = []
+
   for j in range(num_frames):
     i = 7*j
-    if codes_0.shape[0] == 0:
-      codes_0 = torch.tensor([frame[i]], device=snac_device, dtype=torch.int32)
-    else:
-      codes_0 = torch.cat([codes_0, torch.tensor([frame[i]], device=snac_device, dtype=torch.int32)])
+    codes_0_list.append(frame[i])
+    codes_1_list.extend([frame[i+1], frame[i+4]])
+    codes_2_list.extend([frame[i+2], frame[i+3], frame[i+5], frame[i+6]])
+  
+  # Convert lists to tensors in one operation
+  codes_0 = torch.tensor(codes_0_list, device=snac_device, dtype=torch.int32).unsqueeze(0)
+  codes_1 = torch.tensor(codes_1_list, device=snac_device, dtype=torch.int32).unsqueeze(0)
+  codes_2 = torch.tensor(codes_2_list, device=snac_device, dtype=torch.int32).unsqueeze(0)
 
-    if codes_1.shape[0] == 0:
-      
-      codes_1 = torch.tensor([frame[i+1]], device=snac_device, dtype=torch.int32)
-      codes_1 = torch.cat([codes_1, torch.tensor([frame[i+4]], device=snac_device, dtype=torch.int32)])
-    else:
-      codes_1 = torch.cat([codes_1, torch.tensor([frame[i+1]], device=snac_device, dtype=torch.int32)])
-      codes_1 = torch.cat([codes_1, torch.tensor([frame[i+4]], device=snac_device, dtype=torch.int32)])
-    
-    if codes_2.shape[0] == 0:
-      codes_2 = torch.tensor([frame[i+2]], device=snac_device, dtype=torch.int32)
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+3]], device=snac_device, dtype=torch.int32)])
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+5]], device=snac_device, dtype=torch.int32)])
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+6]], device=snac_device, dtype=torch.int32)])
-    else:
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+2]], device=snac_device, dtype=torch.int32)])
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+3]], device=snac_device, dtype=torch.int32)])
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+5]], device=snac_device, dtype=torch.int32)])
-      codes_2 = torch.cat([codes_2, torch.tensor([frame[i+6]], device=snac_device, dtype=torch.int32)])
-
-  codes = [codes_0.unsqueeze(0), codes_1.unsqueeze(0), codes_2.unsqueeze(0)]
+  codes = [codes_0, codes_1, codes_2]
   # check that all tokens are between 0 and 4096 otherwise return *
   if torch.any(codes[0] < 0) or torch.any(codes[0] > 4096) or torch.any(codes[1] < 0) or torch.any(codes[1] > 4096) or torch.any(codes[2] < 0) or torch.any(codes[2] > 4096):
     return
@@ -93,6 +80,8 @@ def turn_token_into_id(token_string, index):
 async def tokens_decoder(token_gen):
     buffer = []
     count = 0
+    batch_size = 56  # Process two chunks at once (28*2) for better efficiency
+    
     async for token_sim in token_gen:       
         token = turn_token_into_id(token_sim, count)
         if token is None:
@@ -102,11 +91,14 @@ async def tokens_decoder(token_gen):
                 buffer.append(token)
                 count += 1
 
-                if count % 7 == 0 and count > 27:
-                    buffer_to_proc = buffer[-28:]
-                    audio_samples = convert_to_audio(buffer_to_proc, count)
-                    if audio_samples is not None:
-                        yield audio_samples
+                # Process in larger batches for better efficiency
+                if count % 7 == 0 and len(buffer) >= batch_size:
+                    # Process multiple chunks at once
+                    for i in range(len(buffer) - batch_size + 28, len(buffer) - 27, 28):
+                        buffer_to_proc = buffer[i:i+28]
+                        audio_samples = convert_to_audio(buffer_to_proc, count)
+                        if audio_samples is not None:
+                            yield audio_samples
 
 # ------------------ Synchronous Tokens Decoder Wrapper ------------------ #
 def tokens_decoder_sync(syn_token_gen):
