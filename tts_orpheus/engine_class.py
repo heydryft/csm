@@ -62,7 +62,7 @@ class OrpheusModel:
             dtype=self.dtype,
             max_model_len=8192,
             gpu_memory_utilization=0.9,
-            tensor_parallel_size=num_gpus,
+            tensor_parallel_size=(num_gpus // 2) * 2,  # Round down to nearest even number
             **self.engine_kwargs
         )
 
