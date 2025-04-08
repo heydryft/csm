@@ -7,7 +7,7 @@ import asyncio
 from typing import Iterator
 
 app = FastAPI()
-model = OrpheusModel()
+model = OrpheusModel(model_name="./Orpheus-3b-AWQ", tokenizer="./Orpheus-3b-AWQ")
 executor = ThreadPoolExecutor()
 
 def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> bytes:
@@ -31,10 +31,18 @@ def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> byte
         data_size
     )
 
-async def stream_audio(prompt: str, voice: str) -> Iterator[bytes]:
+async def stream_audio(prompt: str, voice: str):
     yield create_wav_header()
-    for chunk in model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192):
+
+    loop = asyncio.get_event_loop()
+
+    def generate_chunks():
+        for chunk in model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192):
+            yield chunk
+
+    for chunk in await loop.run_in_executor(executor, lambda: generate_chunks()):
         yield chunk
+
 
 @app.get("/tts")
 async def tts(prompt: str, voice: str = "tara"):
