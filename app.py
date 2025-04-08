@@ -5,15 +5,14 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 prompts = [
-    "Lately, I've been thinking about how much our routines shape the way we feel every day. Like, even small things—waking up a bit earlier, having a proper breakfast, or just stepping outside for a short walk—can make such a difference.",
-    "Also, I had this random moment yesterday where I started a conversation with a stranger at the coffee shop, and it turned out to be one of the nicest chats I've had in a while. It reminded me how disconnected we sometimes get, especially when life gets busy or stressful.",
+    """Alright, Jish.. I'm Muse. And, uh... yeah, I'm here to talk like we're actually in the room together, y'know? <chuckle> Let's keep it real..""",
 ]
 
 def generate_and_save(prompt: str, index: int, voice: str):
     print(f"Starting generation for prompt {index}")
     start_time = time.monotonic()
 
-    syn_tokens = model.generate_speech(prompt=prompt, voice=voice)
+    syn_tokens = model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192)
 
     output_path = f"output_{index}.wav"
 
@@ -40,14 +39,14 @@ def generate_and_save(prompt: str, index: int, voice: str):
 
 def main():
     global model
-    model = OrpheusModel(model_name="./Orpheus-3b-AWQ", tokenizer="./Orpheus-3b-AWQ")
+    model = OrpheusModel()
 
     start_all = time.monotonic()
     results = []
     print("Starting generation for prompts")
     voices = ["zoe", "zac", "jess", "leo", "mia", "julia", "leah"]
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(generate_and_save, prompt, voices[idx % len(voices)], idx) for idx, prompt in enumerate(prompts)]
+        futures = [executor.submit(generate_and_save, prompt, "tara", idx) for idx, prompt in enumerate(prompts)]
         for future in as_completed(futures):
             results.append(future.result())
 

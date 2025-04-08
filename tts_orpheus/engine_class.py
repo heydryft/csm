@@ -29,10 +29,6 @@ class OrpheusModel:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    def _run_async(self, coro):
-        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        return future.result()
-
     def _load_tokenizer(self, tokenizer_path):
         try:
             if os.path.isdir(tokenizer_path):
@@ -120,7 +116,7 @@ class OrpheusModel:
                 token_queue.put(result.outputs[0].text)
             token_queue.put(None)
 
-        self._run_async(async_producer())
+        asyncio.run_coroutine_threadsafe(async_producer(), self.loop)
 
         while True:
             token = token_queue.get()
