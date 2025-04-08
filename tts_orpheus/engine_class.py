@@ -6,7 +6,7 @@ import threading
 import queue
 from vllm import AsyncEngineArgs, SamplingParams, AsyncLLMEngine
 from transformers import AutoTokenizer
-from .decoder import tokens_decoder_sync
+from .decoder import tokens_decoder_sync, tokens_decoder_async
 
 class OrpheusModel:
     def __init__(self, model_name='canopylabs/orpheus-tts-0.1-finetune-prod', dtype=torch.float16, tokenizer='canopylabs/orpheus-3b-0.1-pretrained', **engine_kwargs):
@@ -124,5 +124,44 @@ class OrpheusModel:
                 break
             yield token
 
+    async def generate_tokens_async(self, prompt, voice=None, request_id=None, temperature=0.6, top_p=0.8,
+                                    max_tokens=8192, stop_token_ids=[49158], repetition_penalty=1.3):
+        request_id = request_id or str(uuid.uuid4())
+        prompt_string = self._format_prompt(prompt, voice)
+        sampling_params = SamplingParams(
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            stop_token_ids=stop_token_ids,
+            repetition_penalty=repetition_penalty,
+        )
+
+        token_queue = queue.Queue()
+
+        async def async_producer():
+            async for result in self.engine.generate(
+                prompt=prompt_string,
+                sampling_params=sampling_params,
+                request_id=request_id,
+            ):
+                token_queue.put(result.outputs[0].text)
+            token_queue.put(None)
+
+        producer_task = asyncio.create_task(async_producer())
+
+        while True:
+            try:
+                token = token_queue.get_nowait()
+                if token is None:
+                    break
+                yield token
+            except queue.Empty:
+                await asyncio.sleep(0)
+
+        await producer_task
+
     def generate_speech(self, **kwargs):
         return tokens_decoder_sync(self.generate_tokens_sync(**kwargs))
+
+    def generate_speech_async(self, **kwargs):
+        return tokens_decoder_async(self.generate_tokens_async(**kwargs))

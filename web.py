@@ -1,17 +1,13 @@
+import time
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from tts_orpheus import OrpheusModel
-from concurrent.futures import ThreadPoolExecutor
 import struct
 import asyncio
-from typing import Iterator
 import os
 
 app = FastAPI()
 model = OrpheusModel(model_name="heydryft/Orpheus-3b-FT-AWQ", tokenizer="heydryft/Orpheus-3b-FT-AWQ")
-
-num_threads = os.cpu_count()
-executor = ThreadPoolExecutor(max_workers=num_threads)
 
 def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> bytes:
     byte_rate = sample_rate * channels * bits_per_sample // 8
@@ -34,23 +30,33 @@ def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> byte
         data_size
     )
 
+audio_stream_idx = 0
+
 async def stream_audio(prompt: str, voice: str):
+    global audio_stream_idx
+    current_stream_idx = audio_stream_idx
+    audio_stream_idx += 1
+
+    start_time = time.monotonic()
     yield create_wav_header()
+    yield b'\0' * 2
 
-    generator_instance = model.generate_speech(prompt=prompt, voice=voice, max_tokens=8192)
-    loop = asyncio.get_event_loop()
+    total_frames = 0
+    time_to_first_byte = None
 
-    def get_next_chunk(gen):
-        try:
-            return next(gen)
-        except StopIteration:
-            return None
-
-    while True:
-        chunk = await loop.run_in_executor(executor, get_next_chunk, generator_instance)
+    async for chunk in model.generate_speech_async(prompt=prompt, voice=voice, max_tokens=8192):
         if chunk is None:
             break
         yield chunk
+        if time_to_first_byte is None:
+            time_to_first_byte = time.monotonic() - start_time
+        frame_count = len(chunk) // 2
+        total_frames += frame_count
+
+    duration = total_frames / 24000
+    end_time = time.monotonic()
+    elapsed = end_time - start_time
+    print(f"[METRICS] [Stream {current_stream_idx}] Audio stream completed in {elapsed:.2f} seconds, audio duration: {duration:.2f} seconds, time to first byte: {time_to_first_byte:.2f} seconds")
 
 
 @app.get("/tts")

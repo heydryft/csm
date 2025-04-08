@@ -108,7 +108,6 @@ async def tokens_decoder(token_gen):
                     if audio_samples is not None:
                         yield audio_samples
 
-
 # ------------------ Synchronous Tokens Decoder Wrapper ------------------ #
 def tokens_decoder_sync(syn_token_gen):
 
@@ -138,3 +137,18 @@ def tokens_decoder_sync(syn_token_gen):
         yield audio
 
     thread.join()
+
+# ------------------ Asynchronous Tokens Decoder Wrapper ------------------ #
+async def tokens_decoder_async(async_token_gen):
+    """
+    Asynchronous wrapper for tokens_decoder that takes an async token generator
+    and yields audio chunks asynchronously.
+    
+    Args:
+        async_token_gen: An asynchronous generator that yields tokens.
+        
+    Yields:
+        Audio chunks asynchronously.
+    """
+    async for audio_chunk in tokens_decoder(async_token_gen):
+        yield audio_chunk
