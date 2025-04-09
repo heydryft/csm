@@ -16,12 +16,14 @@ class OrpheusModel:
         self.engine = self._setup_engine()
         self.available_voices = ["zoe", "zac", "jess", "leo", "mia", "julia", "leah"]
 
-        self.tokenizer = asyncio.run(self.engine.get_tokenizer())
-
         # Background event loop
         self.loop = asyncio.new_event_loop()
         self.loop_thread = threading.Thread(target=self._start_loop, daemon=True)
         self.loop_thread.start()
+
+        # Initialize tokenizer using the background loop
+        future = asyncio.run_coroutine_threadsafe(self.engine.get_tokenizer(), self.loop)
+        self.tokenizer = future.result()
 
     def _start_loop(self):
         asyncio.set_event_loop(self.loop)
