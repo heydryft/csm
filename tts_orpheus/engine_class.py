@@ -9,16 +9,14 @@ from transformers import AutoTokenizer
 from .decoder import tokens_decoder_sync, tokens_decoder_async
 
 class OrpheusModel:
-    def __init__(self, model_name='canopylabs/orpheus-tts-0.1-finetune-prod', dtype=torch.float16, tokenizer='canopylabs/orpheus-3b-0.1-pretrained', **engine_kwargs):
+    def __init__(self, model_name='canopylabs/orpheus-tts-0.1-finetune-prod', dtype=torch.float16, **engine_kwargs):
         self.model_name = model_name
         self.dtype = dtype
         self.engine_kwargs = engine_kwargs
         self.engine = self._setup_engine()
         self.available_voices = ["zoe", "zac", "jess", "leo", "mia", "julia", "leah"]
 
-        # Use provided tokenizer path or default to model_name
-        tokenizer_path = tokenizer if tokenizer else model_name
-        self.tokenizer = self._load_tokenizer(tokenizer_path)
+        self.tokenizer = asyncio.run(self.engine.get_tokenizer())
 
         # Background event loop
         self.loop = asyncio.new_event_loop()
