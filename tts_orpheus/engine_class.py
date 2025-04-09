@@ -6,7 +6,7 @@ import threading
 import queue
 from vllm import AsyncEngineArgs, SamplingParams, AsyncLLMEngine
 from transformers import AutoTokenizer
-from .decoder import tokens_decoder_sync, tokens_decoder_async
+from .decoder import tokens_decoder_sync
 
 class OrpheusModel:
     def __init__(self, model_name='canopylabs/orpheus-tts-0.1-finetune-prod', dtype=torch.float16, **engine_kwargs):
@@ -160,6 +160,3 @@ class OrpheusModel:
 
     def generate_speech(self, **kwargs):
         return tokens_decoder_sync(self.generate_tokens_sync(**kwargs))
-
-    def generate_speech_async(self, **kwargs):
-        return tokens_decoder_async(self.generate_tokens_async(**kwargs))
