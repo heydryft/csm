@@ -4,7 +4,10 @@ import torch
 import asyncio
 import threading
 import queue
+import numpy as np
 
+last_chunk_np = None
+fade_length = 512  # around 21ms at 24kHz
 
 model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval()
 
@@ -68,7 +71,7 @@ def convert_to_audio(multiframe, count):
     with stream_ctx, torch.inference_mode():
         # Decode the audio
         audio_hat = model.decode(codes)
-        
+        stream_ctx.cur_stream.synchronize()
         # Extract the relevant slice and efficiently convert to bytes
         # Keep data on GPU as long as possible
         audio_slice = audio_hat[:, :, 2048:4096]
@@ -211,12 +214,13 @@ async def tokens_decoder(token_gen):
     elif len(buffer) >= process_every_n:
         # Pad to minimum frame requirement with copies of the final token
         # This is more continuous than using unrelated tokens from the beginning
-        last_token = buffer[-1]
+        # last_token = buffer[-1]
         padding_needed = min_frames_subsequent - len(buffer)
         
         # Create a padding array of copies of the last token
         # This maintains continuity much better than circular buffering
-        padding = [last_token] * padding_needed
+        # padding = [last_token] * padding_needed
+        padding = [0] * padding_needed
         padded_buffer = buffer + padding
         
         audio_samples = convert_to_audio(padded_buffer, count)
@@ -254,9 +258,17 @@ def tokens_decoder_sync(syn_token_gen):
             # Process audio chunks from the token decoder
             async for audio_chunk in tokens_decoder(async_token_gen()):
                 if audio_chunk:  # Validate audio chunk before adding to queue
-                    audio_queue.put(audio_chunk)
+                    try:
+                        audio_queue.put_nowait(audio_chunk)
+                    except queue.Full:
+                        try:
+                            # Drop oldest audio and insert new chunk
+                            _ = audio_queue.get_nowait()
+                            audio_queue.put_nowait(audio_chunk)
+                        except queue.Empty:
+                            pass  # Failsafe
                     chunk_count += 1
-                    
+        
         except Exception as e:
             print(f"Error in audio producer: {e}")
             import traceback
@@ -280,31 +292,33 @@ def tokens_decoder_sync(syn_token_gen):
         audio = audio_queue.get()
         if audio is None:
             break
-        
-        audio_buffer.append(audio)
-        # Yield buffered audio chunks for smoother playback
-        if len(audio_buffer) >= buffer_size:
-            for chunk in audio_buffer:
-                yield chunk
-            audio_buffer = []
+    
+        # Convert bytes to NumPy array
+        current_chunk_np = np.frombuffer(audio, dtype=np.int16)
+
+        if last_chunk_np is not None:
+            # Crossfade last and current chunk
+            fade = np.linspace(0, 1, fade_length)
+            crossfaded = (
+                last_chunk_np[-fade_length:] * (1 - fade) +
+                current_chunk_np[:fade_length] * fade
+            ).astype(np.int16)
+
+            # Combine: [last_chunk[:-fade]] + [crossfaded] + [current_chunk[fade:]]
+            blended = np.concatenate([
+                last_chunk_np[:-fade_length],
+                crossfaded,
+                current_chunk_np[fade_length:]
+            ])
+        else:
+            # First chunk, just play it
+            blended = current_chunk_np
+
+        yield blended.tobytes()
+        last_chunk_np = current_chunk_np
     
     # Yield any remaining audio in the buffer
     for chunk in audio_buffer:
         yield chunk
 
     thread.join()
-
-# ------------------ Asynchronous Tokens Decoder Wrapper ------------------ #
-async def tokens_decoder_async(async_token_gen):
-    """
-    Asynchronous wrapper for tokens_decoder that takes an async token generator
-    and yields audio chunks asynchronously.
-    
-    Args:
-        async_token_gen: An asynchronous generator that yields tokens.
-        
-    Yields:
-        Audio chunks asynchronously.
-    """
-    async for audio_chunk in tokens_decoder(async_token_gen):
-        yield audio_chunk
