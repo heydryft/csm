@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 from .decoder import tokens_decoder_sync
 
 class OrpheusModel:
-    def __init__(self, model_name='canopylabs/orpheus-tts-0.1-finetune-prod', dtype=torch.float16, **engine_kwargs):
+    def __init__(self, model_name='canopylabs/orpheus-tts-0.1-finetune-prod', dtype=torch.bfloat16, **engine_kwargs):
         self.model_name = model_name
         self.dtype = dtype
         self.engine_kwargs = engine_kwargs
@@ -62,7 +62,10 @@ class OrpheusModel:
             dtype=self.dtype,
             max_model_len=8192,
             gpu_memory_utilization=0.9,
+            enable_chunked_prefill=True,
+            max_num_batched_tokens=8192,
             tensor_parallel_size=(num_gpus // 2) * 2,  # Round down to nearest even number
+            pipeline_parallel_size=(num_gpus // 2) * 2,
             **self.engine_kwargs
         )
 
