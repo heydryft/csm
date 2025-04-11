@@ -57,6 +57,16 @@ class OrpheusModel:
     def _setup_engine(self):
         num_gpus = torch.cuda.device_count()
 
+        def round_to_nearest_even(n):
+            floor_even = int(n // 2) * 2
+            ceil_even = floor_even + 2
+            return floor_even if abs(n - floor_even) < abs(n - ceil_even) else ceil_even
+
+        parallel_tensors = round_to_nearest_even(num_gpus)
+
+        if os.environ.get("CUDA_VISIBLE_DEVICES"):
+            parallel_tensors = 1
+
         engine_args = AsyncEngineArgs(
             model=self.model_name,
             dtype=self.dtype,
@@ -64,7 +74,8 @@ class OrpheusModel:
             gpu_memory_utilization=0.9,
             enable_chunked_prefill=True,
             max_num_batched_tokens=16384,
-            tensor_parallel_size=1,  # Round down to nearest even number
+            tensor_parallel_size=2,  # Round down to nearest even number
+            num_scheduler_steps=16,
             **self.engine_kwargs
         )
 
