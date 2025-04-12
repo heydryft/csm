@@ -15,6 +15,9 @@ import webrtcvad
 import colorama
 from colorama import Fore, Back
 colorama.init()
+import llm
+
+import speech_handler
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -68,6 +71,7 @@ class AudioTranscriber:
         self.last_partial_time = None
 
     def is_half_baked(self, transcript):
+        return False
         if transcript and transcript[-3:] == '...':
             return True
         if transcript and transcript[-1] not in {'.', '!', '?'}:
@@ -114,6 +118,7 @@ class AudioTranscriber:
 
                 if not self.recording:
                     if is_speech:
+                        speech_handler.stop()
                         self.recording = True
                         self.speech_start_time = timestamp
                         self.voiced_frames = list(self.ring_buffer)
@@ -194,7 +199,7 @@ class AudioTranscriber:
                         progressbar=False,
                         textnorm="withitn"
                     )
-                    transcript_parts = [f"<{seg.event} ({seg.emotion})> {seg.text}" for seg in segments]
+                    transcript_parts = [f"<{seg.event} ({seg.emotion})> {seg.text} </{seg.event}>" for seg in segments]
                     transcript = " ".join(transcript_parts).strip()
 
                     if self.last_half_baked:
@@ -221,6 +226,9 @@ class AudioTranscriber:
                     print(f"{Back.YELLOW}PARTIAL{Back.RESET}{transcript}")
                 else:
                     print(f"{Back.GREEN}TRANSCRIPT{Back.RESET}: {transcript}")
+                    reply = llm.respond(transcript)
+                    speech_handler.speak(reply)
+                    print(f"{Back.BLUE}MUSE{Back.RESET}: {reply}")
                     self.last_partial_time = None
 
                 if self.output_file:
