@@ -74,7 +74,7 @@ class OrpheusModel:
             gpu_memory_utilization=0.9,
             enable_chunked_prefill=True,
             max_num_batched_tokens=16384,
-            tensor_parallel_size=2,  # Round down to nearest even number
+            tensor_parallel_size=parallel_tensors,  # Round down to nearest even number
             num_scheduler_steps=16,
             **self.engine_kwargs
         )
