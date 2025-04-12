@@ -64,7 +64,7 @@ class OrpheusModel:
 
         parallel_tensors = round_to_nearest_even(num_gpus)
 
-        if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        if os.environ.get("CUDA_VISIBLE_DEVICES") or num_gpus == 1:
             parallel_tensors = 1
 
         engine_args = AsyncEngineArgs(
