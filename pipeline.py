@@ -34,6 +34,31 @@ def rms_energy(wave_bytes):
     samples = np.frombuffer(wave_bytes, dtype=np.int16)
     return np.sqrt(np.mean(samples.astype(np.float32)**2))
 
+# New Pipeline class for web integration
+class Pipeline:
+    def __init__(self):
+        self.last_transcript = None
+        self.last_response = None
+        
+    def process_transcript(self, transcript):
+        """Process a transcript from the web interface and return a response"""
+        if not transcript or transcript.strip() == "":
+            return None
+            
+        self.last_transcript = transcript
+        print(f"{Back.GREEN}TRANSCRIPT{Back.RESET}: {transcript}")
+        
+        # Generate response using LLM
+        reply = llm.respond(transcript)
+        print(f"{Back.BLUE}MUSE{Back.RESET}: {reply}")
+        
+        self.last_response = {
+            "text": reply,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return self.last_response
+
 class AudioTranscriber:
     def __init__(self, sample_rate=16000, chunk_duration_ms=30, padding_duration_ms=300,
                  vad_aggressiveness=3, silence_threshold_ms=500,

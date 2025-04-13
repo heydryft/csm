@@ -2,44 +2,555 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Streaming Audio Playback</title>
+  <title>Speech Interaction System</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+      text-align: center;
+    }
+    .container {
+      background-color: white;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .controls {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    .listening-indicator {
+      display: flex;
+      align-items: center;
+      margin-right: 15px;
+    }
+    .listening-dot {
+      width: 12px;
+      height: 12px;
+      background-color: #f44336;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+    .listening-dot.active {
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7);
+      }
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(244, 67, 54, 0);
+      }
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(244, 67, 54, 0);
+      }
+    }
+    .conversation {
+      margin-top: 20px;
+      max-height: 400px;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      padding: 10px;
+    }
+    .message {
+      margin-bottom: 10px;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    .user-message {
+      background-color: #e3f2fd;
+      text-align: right;
+    }
+    .system-message {
+      background-color: #f1f8e9;
+    }
+    .voice-controls {
+      margin-top: 20px;
+      display: flex;
+      align-items: center;
+    }
+    .voice-controls label {
+      margin-right: 10px;
+    }
+    #textInput {
+      flex-grow: 1;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+      margin-right: 10px;
+    }
+    #status {
+      color: #666;
+      font-style: italic;
+      margin-top: 10px;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
 </head>
 <body>
-  <h1>Streaming Audio Playback</h1>
-  <form id="promptForm">
-    <label for="promptInput">Enter Prompt:</label><br>
-    <textarea id="promptInput" rows="4" cols="50" placeholder="Type your prompt here" required></textarea><br>
-    <label for="voiceSelect">Select Voice:</label><br>
-    <select id="voiceSelect">
-      <option value="tara" selected>tara</option>
-      <option value="zoe">zoe</option>
-      <option value="zac">zac</option>
-      <option value="jess">jess</option>
-      <option value="leo">leo</option>
-      <option value="mia">mia</option>
-      <option value="julia">julia</option>
-      <option value="leah">leah</option>
-    </select><br><br>
-    <button type="submit">Play Audio</button>
-  </form>
-  <audio id="audioPlayer" controls autoplay preload="auto"></audio>
+  <h1>Speech Interaction System <span style="color:red; font-size:14px;">[WebSocket Audio Streaming]</span></h1>
+  
+  <div class="container">
+    <div class="controls">
+      <div class="listening-indicator">
+        <div id="listeningDot" class="listening-dot"></div>
+        <span>Listening</span>
+      </div>
+      <button id="startProduceBtn">Start Listening</button>
+      <button id="stopProduceBtn" disabled>Stop Listening</button>
+      <select id="voiceSelect">
+        <option value="tara" selected>Tara</option>
+        <option value="zoe">Zoe</option>
+        <option value="zac">Zac</option>
+        <option value="jess">Jess</option>
+        <option value="leo">Leo</option>
+        <option value="mia">Mia</option>
+        <option value="julia">Julia</option>
+        <option value="leah">Leah</option>
+      </select>
+    </div>
+    
+    <div id="status">Please click "Start Listening" and allow microphone access when prompted</div>
+    
+    <div class="conversation" id="conversation">
+      <!-- Conversation messages will appear here -->
+      <div class="message system-message">Hello! Click "Start Listening" to begin. You'll need to grant microphone permissions when prompted by your browser.</div>
+    </div>
+    
+    <div class="voice-controls">
+      <input type="text" id="textInput" placeholder="Or type your message here...">
+      <button id="sendButton">Send</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/bundle.min.js"></script>
 
   <script>
-    const base_url = ``; // <-- replace with your server address
+    console.log("SCRIPT LOADED - WebSocket Audio Streaming - Timestamp:", new Date().toISOString());
+    
+    // WebSocket variables
+    let produceSocket = null;
+    let consumeSocket = null;
+    let audioContext = null;
+    let mediaStream = null;
+    let clientId = generateUUID();
 
-    document.getElementById("promptForm").addEventListener("submit", async function(event) {
-      event.preventDefault();
+    let should_play = false;
+    
+    // DOM elements
+    const statusElement = document.getElementById('status');
+    const startProduceBtn = document.getElementById('startProduceBtn');
+    const stopProduceBtn = document.getElementById('stopProduceBtn');
+    const listeningDot = document.getElementById('listeningDot');
+    const sendButton = document.getElementById('sendButton');
+    const textInput = document.getElementById('textInput');
+    
+    // Generate a UUID for client identification
+    function generateUUID() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+    
+    // Start audio capture and WebSocket connection
+    async function startProduce() {
+      try {
+        // Connect to WebSocket
+        produceSocket = new WebSocket(`ws://${location.host}/ws/tts/${clientId}`);
+        
+        // Set up WebSocket event handlers
+        produceSocket.onopen = () => {
+          console.log('WebSocket connection established');
+          statusElement.textContent = 'Connected. Streaming audio...';
+          listeningDot.classList.add('active');
+          
+          // Initialize audio capture after WebSocket is connected
+          initAudioCapture();
+          
+          // Also start the consumption WebSocket for audio streaming
+          startConsume();
+        };
+        
+        produceSocket.onclose = () => {
+          console.log('WebSocket connection closed');
+          statusElement.textContent = 'Connection closed';
+          stopProduce();
+        };
+        
+        produceSocket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          statusElement.textContent = 'Connection error';
+          stopProduce();
+        };
+        
+        produceSocket.onmessage = (event) => {
+          handleServerMessage(event);
+        };
+      } catch (error) {
+        console.error('Error starting production:', error);
+        statusElement.textContent = `Error: ${error.message}`;
+      }
+    }
+    
+    // Initialize audio capture
+    async function initAudioCapture() {
+      try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
+        mediaStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            sampleRate: 16000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true
+          } 
+        });
 
-      const prompt = document.getElementById("promptInput").value;
-      const voice = document.getElementById("voiceSelect").value;
+        const _vad = await vad.MicVAD.new({
+          model: "v5",
+          preSpeechPadFrames: 20,
+          // positiveSpeechThreshold: 99 / 100,
+          additionalAudioConstraints: {
+            sampleRate: 16000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true
+          },
+          onFrameProcessed: (probs, frame) => {
+            if (probs["isSpeech"] < 0.5) {
+              return
+            }
+            should_play = false;
+          },
+          onSpeechEnd: (audio) => {
+            // Convert Float32Array to Int16Array for better compatibility
+            const int16Data = convertFloat32ToInt16(audio);
+            // Send the audio data as binary
+            produceSocket.send(int16Data);
 
-      const encodedPrompt = encodeURIComponent(prompt);
-      const audioUrl = `${base_url}/tts?prompt=` + encodedPrompt + `&voice=${voice}`;
+            produceSocket.send(JSON.stringify({"type": "vad_end"}));
+          },
+          stream: mediaStream
+        })
+        _vad.start()
+        
+        // const source = audioContext.createMediaStreamSource(mediaStream);
+        // const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        
+        // source.connect(processor);
+        // processor.connect(audioContext.destination);
+        
+        // processor.onaudioprocess = (e) => {
+        //   if (produceSocket && produceSocket.readyState === WebSocket.OPEN && is_speech) {
+        //     const inputData = e.inputBuffer.getChannelData(0);
+            
+        //     // Convert Float32Array to Int16Array for better compatibility
+        //     const int16Data = convertFloat32ToInt16(inputData);
+        //     // Send the audio data as binary
+        //     produceSocket.send(int16Data);
+        //   }
+        // };
+        
+        startProduceBtn.disabled = true;
+        stopProduceBtn.disabled = false;
+      } catch (error) {
+        console.error('Error initializing audio capture:', error);
+        statusElement.textContent = `Microphone error: ${error.message}`;
+        stopProduce();
+      }
+    }
+    
+    // Convert Float32Array to Int16Array
+    function convertFloat32ToInt16(buffer) {
+      const l = buffer.length;
+      const buf = new Int16Array(l);
+      
+      for (let i = 0; i < l; i++) {
+        buf[i] = Math.min(1, buffer[i]) * 0x7FFF;
+      }
+      
+      return buf.buffer;
+    }
+    
+    // Stop audio capture and close WebSocket
+    function stopProduce() {
+      try {
+        // Stop audio capture
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(track => track.stop());
+          mediaStream = null;
+        }
+        
+        // Close audio context
+        if (audioContext && audioContext.state !== 'closed') {
+          audioContext.close();
+          audioContext = null;
+        }
+        
+        // Close WebSocket
+        if (produceSocket) {
+          produceSocket.close();
+          produceSocket = null;
+        }
+        
+        // Stop consumption WebSocket
+        stopConsume();
+        
+        // Update UI
+        statusElement.textContent = 'Disconnected. Click "Start Listening" to begin again.';
+        startProduceBtn.disabled = false;
+        stopProduceBtn.disabled = true;
+        listeningDot.classList.remove('active');
+      } catch (error) {
+        console.error('Error stopping audio capture:', error);
+      }
+    }
+    
+    // Start consuming audio from the server
+    function startConsume() {
+      try {
+        // Create a new WebSocket for audio consumption
+        consumeSocket = new WebSocket(`ws://${location.host}/ws/speech/${clientId}`);
+        consumeSocket.binaryType = 'arraybuffer';
+        
+        // Create audio context if it doesn't exist
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        
+        // Handle incoming audio data
+        consumeSocket.onmessage = (event) => {
+          
+          if (event.data instanceof ArrayBuffer) {
+            // Process binary audio data
+            if (should_play) {
+              playAudioFromArrayBuffer(event.data);
+            }
+          } else {
+            if (event.data.includes("tts_start")) {
+              console.log('Received tts_start message on speech socket');
+              should_play = true;
+            } else {
+              // Handle text messages
+              console.log('Received text message on speech socket:', event.data);
+            }
+          }
+        };
+        
+        consumeSocket.onclose = () => {
+          console.log('Speech consumption WebSocket closed');
+        };
+        
+        consumeSocket.onerror = (error) => {
+          console.error('Speech consumption WebSocket error:', error);
+        };
+      } catch (error) {
+        console.error('Error starting speech consumption:', error);
+      }
+    }
+    
+    // Stop consuming audio
+    function stopConsume() {
+      if (consumeSocket) {
+        consumeSocket.close();
+        consumeSocket = null;
+      }
+    }
+    
+    // Global variable to track the next scheduled playback time.
+    // It’s assumed that multiple calls to playAudioFromArrayBuffer() come in order.
+    let nextStartTime = (audioContext || {}).currentTime;
 
-      const audioPlayer = document.getElementById("audioPlayer");
-      audioPlayer.src = audioUrl;
-      audioPlayer.load();
-      audioPlayer.play().catch(err => console.error("Playback error:", err));
+    function playAudioFromArrayBuffer(arrayBuffer, rawSampleRate = 24000) {
+      // This appears to be your original function with minimal changes to fix the quality issue
+      
+      function scheduleRawPCMPlayback(buffer) {
+        // Convert raw PCM data (16-bit signed) to a Float32Array.
+        const int16Data = new DataView(buffer);
+        const float32Data = new Float32Array(buffer.byteLength / 2);
+        for (let i = 0; i < float32Data.length; i++) {
+          const int16 = int16Data.getInt16(i * 2, true); // true = little-endian
+          float32Data[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
+        }
+
+        // Create an AudioBuffer using the actual sample rate (rawSampleRate).
+        const audioBuffer = audioContext.createBuffer(1, float32Data.length, rawSampleRate);
+        audioBuffer.copyToChannel(float32Data, 0, 0);
+
+        // Prepare an AudioBufferSourceNode.
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+
+        // Preserve the start time scheduling.
+        if (!nextStartTime || nextStartTime < audioContext.currentTime) {
+          nextStartTime = audioContext.currentTime;
+        }
+
+        // Start playback at the scheduled time.
+        source.start(nextStartTime + 0.5);
+        current_audio_source = source;
+
+        // Update the schedule with this buffer's duration (without modifying start time logic).
+        nextStartTime += audioBuffer.duration;
+      }
+
+      // Helper function to schedule playback for decoded audio containers.
+      function scheduleDecodedBufferPlayback(decodedBuffer) {
+        const source = audioContext.createBufferSource();
+        source.buffer = decodedBuffer;
+        source.connect(audioContext.destination);
+
+        if (nextStartTime < audioContext.currentTime) {
+          nextStartTime = audioContext.currentTime;
+        }
+        source.start(nextStartTime);
+        nextStartTime += decodedBuffer.duration;
+      }
+
+      // Check the header to detect format.
+      const headerBytes = new Uint8Array(arrayBuffer, 0, 4);
+      const headerStr = new TextDecoder("utf-8").decode(headerBytes);
+
+      // If the header is recognized as a WAV or Ogg container, decode normally.
+      if (headerStr === "RIFF" || headerStr === "OggS") {
+        audioContext.decodeAudioData(arrayBuffer)
+          .then((decodedData) => {
+            scheduleDecodedBufferPlayback(decodedData);
+          })
+          .catch((error) => {
+            console.error("Error decoding audio data:", error);
+          });
+      } else {
+
+        // Otherwise, assume the data is raw PCM.
+        scheduleRawPCMPlayback(arrayBuffer);
+      }
+    }
+    
+    // Handle messages from the server
+    function handleServerMessage(event) {
+      try {
+        // Parse JSON messages
+        const data = JSON.parse(event.data);
+        console.log('Received message:', data);
+        
+        if (data.type === 'transcript') {
+          // Display transcript
+          addMessage(data.text, 'user');
+        } else if (data.type === 'response') {
+          // Display response
+          addMessage(data.text, 'system');
+        } else if (data.error) {
+          // Display error
+          console.error('Server error:', data.error);
+          statusElement.textContent = `Error: ${data.error}`;
+        }
+      } catch (error) {
+        console.error('Error handling server message:', error);
+      }
+    }
+    
+    // Play audio blob
+    async function playAudioBlob(blob) {
+      try {
+        const audioUrl = URL.createObjectURL(blob);
+        const audio = new Audio(audioUrl);
+        await audio.play();
+        
+        // Clean up after playing
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+        };
+      } catch (error) {
+        console.error('Error playing audio:', error);
+      }
+    }
+    
+    // Add message to conversation
+    function addMessage(text, sender) {
+      const messagesContainer = document.getElementById('conversation');
+      const messageElement = document.createElement('div');
+      messageElement.className = `message ${sender === 'user' ? 'user-message' : 'system-message'}`;
+      messageElement.textContent = text;
+      messagesContainer.appendChild(messageElement);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    
+    // Send text message
+    function sendTextMessage() {
+      const text = textInput.value.trim();
+      if (!text) return;
+      
+      if (!produceSocket || produceSocket.readyState !== WebSocket.OPEN) {
+        // If not connected, try to connect first
+        startProduce().then(() => {
+          sendMessage(text);
+        });
+      } else {
+        sendMessage(text);
+      }
+      
+      textInput.value = '';
+    }
+    
+    // Send message through WebSocket
+    function sendMessage(text) {
+      const message = {
+        type: 'tts_request',
+        prompt: text,
+        voice: document.getElementById('voiceSelect').value
+      };
+      
+      produceSocket.send(JSON.stringify(message));
+      addMessage(text, 'user');
+    }
+    
+    // Event listeners
+    document.addEventListener('DOMContentLoaded', () => {
+      startProduceBtn.addEventListener('click', startProduce);
+      stopProduceBtn.addEventListener('click', stopProduce);
+      sendButton.addEventListener('click', sendTextMessage);
+      
+      textInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          sendTextMessage();
+        }
+      });
     });
   </script>
 </body>
