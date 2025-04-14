@@ -23,6 +23,15 @@ import requests
 
 class Qwen25OmniThiknerGPTQ(BaseGPTQModel):
     loader = Qwen2_5OmniModel
+    base_modules = [
+        # "thinker.model.embed_tokens", 
+        "thinker.model.norm", 
+        # "token2wav", 
+        "thinker.audio_tower", 
+        # "thinker.model.rotary_emb",
+        # "thinker.visual", 
+        # "talker"
+    ]
     pre_lm_head_norm_module = "thinker.model.norm"
     require_monkeypatch = False
     layers_node = "thinker.model.layers"
