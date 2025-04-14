@@ -107,7 +107,7 @@ class OrpheusModel:
                 return self.tokenizer.decode(all_input_ids[0])
 
     def stop_stream(self, request_id):
-        self.engine.abort(request_id)
+        asyncio.run_coroutine_threadsafe(self.engine.abort(request_id), self.loop)
 
     def generate_tokens_sync(self, prompt, voice=None, request_id=None, temperature=0.6, top_p=0.8,
                              max_tokens=8192, stop_token_ids=[49158], repetition_penalty=1.3):

@@ -1,0 +1,6 @@
+orpheus-speech
+colorama
+whisper
+omnisensevoice
+openai
+python-dotenv
