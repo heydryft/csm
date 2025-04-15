@@ -4,3 +4,4 @@ whisper
 omnisensevoice
 openai
 python-dotenv
+openai-whisper

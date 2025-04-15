@@ -16,11 +16,11 @@ import colorama
 from colorama import Fore, Back
 colorama.init()
 import llm
-# import whisper
+import whisper
 import torch
 from datetime import datetime
 
-# whisper_model = whisper.load_model("tiny", device="cuda")
+whisper_model = whisper.load_model("turbo", device="cuda")
 
 # def contains_words_from_tensor(audio_tensor: torch.Tensor, sample_rate: int) -> bool:
 #     """
@@ -74,14 +74,14 @@ current_client_stream = {}
 
 # Silence timers for each client
 silence_timers = {}
-SILENCE_TIMEOUT = 15  # 7 seconds
+SILENCE_TIMEOUT = 15  # 5 seconds
 
 # Initialize transcription model if available
 if TRANSCRIPTION_AVAILABLE:
     print(f"{Fore.CYAN}Initializing transcription model...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"{Fore.CYAN}Using device: {device}")
-    sense_voice_model = OmniSenseVoiceSmall("iic/SenseVoiceSmall", quantize=True)
+    # sense_voice_model = OmniSenseVoiceSmall("iic/SenseVoiceSmall", quantize=True)
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -125,7 +125,7 @@ async def handle_silence_timeout(client_id: str):
     silence_idx += 1
     
     # Generate a silence notification message
-    silence_message = f"<Silence ({silence_idx})>"
+    silence_message = f"<User has been silent for {SILENCE_TIMEOUT} seconds, take the conversation ahead ask questions, do not question their silence>"
     
     # Get response from LLM for the silence
     try:
@@ -145,7 +145,7 @@ async def handle_silence_timeout(client_id: str):
     except Exception as e:
         debug(f"[ERROR] Error handling silence timeout: {str(e)}")
 
-def start_silence_timer(client_id: str):
+def reset_silence_timer(client_id: str):
     """Start or reset the silence timer for a client"""
     # Cancel existing timer if there is one
     cancel_silence_timer(client_id)
@@ -230,21 +230,23 @@ async def process_transcription_queue(client_id: str):
 
                     # Run both tasks concurrently
                     # contains_words_task = contains_words_from_tensor(audio_tensor, 16000)
-                    segments = sense_voice_model.transcribe(
-                        audio_array,
-                        language="en",
-                        batch_size=512,
-                        progressbar=False,
-                        textnorm="withitn"
-                    )
+                    # segments = sense_voice_model.transcribe(
+                    #     audio_array,
+                    #     language="en",
+                    #     batch_size=512,
+                    #     progressbar=False,
+                    #     textnorm="withitn"
+                    # )
 
                     # if not contains_words:
                     #     queue.task_done()
                     #     continue
                     
-                    debug(f"[DEBUG] Transcription complete, got {len(segments)} segments", transcription_start)
-                    transcript_parts = [f"<{seg.event} ({seg.emotion})> {seg.text} </{seg.event}>" for seg in segments]
-                    transcript = " ".join(transcript_parts).strip()
+                    debug(f"[DEBUG] Transcription complete", transcription_start)
+                    # transcript_parts = [f"<{seg.event} ({seg.emotion})> {seg.text} </{seg.event}>" for seg in segments]
+                    # transcript = " ".join(transcript_parts).strip()
+                    result = whisper_model.transcribe(audio_tensor, fp16=False, language="en")
+                    transcript = result["text"]
                     debug(f"[DEBUG] Final transcript: {transcript}")
                     
                 except Exception as e:
@@ -283,7 +285,7 @@ async def process_transcription_queue(client_id: str):
 async def process_audio_chunk(audio_chunk: bytes, client_id: str):
     """Process an audio chunk from the WebSocket and add it to the transcription queue"""
     # Reset the silence timer whenever we receive audio
-    start_silence_timer(client_id)
+    reset_silence_timer(client_id)
     
     # Convert audio chunk to numpy array
     samples = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
@@ -357,7 +359,7 @@ async def stream_audio_websocket(prompt: str, voice: str, client_id: str):
     
     executor = ThreadPoolExecutor()
 
-    executor.submit(stream_speech, prompt, voice, stream_id, client_id, asyncio.get_event_loop())
+    executor.submit(stream_speech, prompt, "dan", stream_id, client_id, asyncio.get_event_loop())
 
 def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None, loop: asyncio.AbstractEventLoop = None):
     """Generate speech and put audio chunks into the queue"""
@@ -371,50 +373,44 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
 
     syn_tokens = model.generate_speech(prompt=prompt, voice=voice, max_tokens=2000, request_id=stream_id)
 
-    with wave.open(f"output_{stream_id}.wav", "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(24000)
-
-        should_stop = False  # Flag to indicate if we should stop processing
+    should_stop = False  # Flag to indicate if we should stop processing
         
-        # Send start message to client WebSocket
+    # Send start message to client WebSocket
+    if client_id and client_id in speech_connections and speech_connections[client_id]:
+        for ws in speech_connections[client_id]:
+            try:
+                if stream_id == current_client_stream[client_id]:
+                    asyncio.run_coroutine_threadsafe(
+                        ws.send_text(json.dumps({"type": "tts_start", "stream_id": stream_id})),
+                        loop
+                    )
+            except Exception as e:
+                debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
+
+    for audio_chunk in syn_tokens:
+        if should_stop:  # Check if we should stop processing
+            break
+                
+        frame_count = len(audio_chunk) // (2 * 1)  # 16-bit mono
+        total_frames += frame_count
+
+        # Also send to speech WebSocket if client_id is provided
         if client_id and client_id in speech_connections and speech_connections[client_id]:
+            # Send the audio chunk to all connected speech WebSockets for this client
             for ws in speech_connections[client_id]:
                 try:
                     if stream_id == current_client_stream[client_id]:
                         asyncio.run_coroutine_threadsafe(
-                            ws.send_text(json.dumps({"type": "tts_start", "stream_id": stream_id})),
+                            ws.send_bytes(audio_chunk),
                             loop
                         )
+                        asyncio.to_thread(reset_silence_timer, client_id)
+                    else:
+                        model.stop_stream(stream_id)
+                        should_stop = True  # Set flag to stop processing
+                        break
                 except Exception as e:
                     debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
-
-        for audio_chunk in syn_tokens:
-            if should_stop:  # Check if we should stop processing
-                break
-                
-            frame_count = len(audio_chunk) // (2 * 1)  # 16-bit mono
-            total_frames += frame_count
-
-            wf.writeframes(audio_chunk)
-
-            # Also send to speech WebSocket if client_id is provided
-            if client_id and client_id in speech_connections and speech_connections[client_id]:
-                # Send the audio chunk to all connected speech WebSockets for this client
-                for ws in speech_connections[client_id]:
-                    try:
-                        if stream_id == current_client_stream[client_id]:
-                            asyncio.run_coroutine_threadsafe(
-                                ws.send_bytes(audio_chunk),
-                                loop
-                            )
-                        else:
-                            model.stop_stream(stream_id)
-                            should_stop = True  # Set flag to stop processing
-                            break
-                    except Exception as e:
-                        debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
 
             if time_to_first_byte is None:
                 time_to_first_byte = time.monotonic() - stream_start
@@ -452,7 +448,7 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
     debug(f"[DEBUG] TTS WebSocket connected for client {client_id}", connect_start)
     try:
         # Start the silence timer when the connection is established
-        start_silence_timer(client_id)
+        reset_silence_timer(client_id)
         
         while True:
             try:
@@ -481,7 +477,7 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
                             debug(f"[DEBUG] TTS request processed for client {client_id}", tts_start)
                         elif msg_type == "vad_end":
                             # Reset the silence timer when VAD ends
-                            start_silence_timer(client_id)
+                            reset_silence_timer(client_id)
                         
                     except json.JSONDecodeError:
                         await manager.send_text(json.dumps({"error": "Invalid JSON"}), client_id)
@@ -496,7 +492,7 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
                     debug(f"[DEBUG] Processed audio chunk from client {client_id}", process_start)
                     
                     # Reset the silence timer when we receive audio
-                    start_silence_timer(client_id)
+                    reset_silence_timer(client_id)
             except RuntimeError as e:
                 # Handle "Cannot call 'receive' once a disconnect message has been received"
                 if "disconnect message" in str(e):

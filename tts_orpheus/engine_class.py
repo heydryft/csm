@@ -71,7 +71,7 @@ class OrpheusModel:
             model=self.model_name,
             dtype=self.dtype,
             max_model_len=8192,
-            gpu_memory_utilization=0.9,
+            gpu_memory_utilization=0.5,
             enable_chunked_prefill=True,
             max_num_batched_tokens=16384,
             tensor_parallel_size=parallel_tensors,  # Round down to nearest even number
