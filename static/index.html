@@ -242,8 +242,13 @@
 
         const _vad = await vad.MicVAD.new({
           model: "v5",
-          preSpeechPadFrames: 20,
-          // positiveSpeechThreshold: 99 / 100,
+          preSpeechPadFrames: 3,
+          positiveSpeechThreshold: 0.5,
+          negativeSpeechThreshold: 0.3,
+          redemptionFrames: 24,
+          frameSamples: 512,
+          minSpeechFrames: 9,
+          userSpeakingThreshold: 0.5,
           additionalAudioConstraints: {
             sampleRate: 16000,
             channelCount: 1,
@@ -254,14 +259,14 @@
             if (probs["isSpeech"] < 0.5) {
               return
             }
+            // Convert Float32Array to Int16Array for better compatibility
+            const int16Data = convertFloat32ToInt16(frame);
+            // Send the audio data as binary
+            produceSocket.send(int16Data);
+            
             should_play = false;
           },
           onSpeechEnd: (audio) => {
-            // Convert Float32Array to Int16Array for better compatibility
-            const int16Data = convertFloat32ToInt16(audio);
-            // Send the audio data as binary
-            produceSocket.send(int16Data);
-
             produceSocket.send(JSON.stringify({"type": "vad_end"}));
           },
           stream: mediaStream

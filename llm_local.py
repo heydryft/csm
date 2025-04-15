@@ -3,12 +3,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-import openai
-BASE_URL = os.getenv("GROQ_API_BASE")
-API_KEY = os.getenv("GROQ_API_KEY")
+import uuid
+from transformers import AutoTokenizer
+# import openai
+# BASE_URL = os.getenv("GROQ_API_BASE")
+# API_KEY = os.getenv("GROQ_API_KEY")
 
-openai.api_key = API_KEY
-openai.base_url = BASE_URL
+# openai.api_key = API_KEY
+# openai.base_url = BASE_URL
 
 # Initialize a message history
 messages = [{"role": "system", "content": """Name: Muse
@@ -35,21 +37,25 @@ Use naturally — like human sounds in real speech.
 
 Muse = your voice-aware, emotionally real bestie"""}]
 
-def respond(message):
+sampling_params = SamplingParams(
+    temperature=0.7,
+    top_p=0.95,
+    max_tokens=100,
+    stop=["</s>"]
+)
+
+engine = AsyncLLMEngine.from_engine_args(AsyncEngineArgs(model="Qwen/Qwen2.5-7B-Instruct-AWQ", quantization="awq"))
+
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct-AWQ")
+
+async def respond(message):
     messages.append({"role": "user", "content": message})
     
-    response = openai.chat.completions.create(
-        model="mistral-saba-24b",
-        messages=messages,
-    )
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False)
     
-    messages.append({"role": "assistant", "content": response.choices[0].message.content})
-    return response.choices[0].message.content
+    gen = engine.generate(prompt, sampling_params, request_id=str(uuid.uuid4()))
 
-def warmup():
-    openai.chat.completions.create(
-        model="mistral-saba-24b",
-        messages=[{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Hello, how are you?"}],
-    )
-
-warmup()
+    response = await gen
+    
+    messages.append({"role": "assistant", "content": response.outputs[0].text})
+    return response.outputs[0].text
