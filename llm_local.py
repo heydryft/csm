@@ -1,18 +1,8 @@
 from dotenv import load_dotenv
-from vllm import SamplingParams, AsyncLLMEngine, AsyncEngineArgs
-from transformers import AutoTokenizer
 
 load_dotenv()
 
-import os
-import uuid
-from transformers import AutoTokenizer
-# import openai
-# BASE_URL = os.getenv("GROQ_API_BASE")
-# API_KEY = os.getenv("GROQ_API_KEY")
-
-# openai.api_key = API_KEY
-# openai.base_url = BASE_URL
+from lmdeploy import pipeline, TurbomindEngineConfig
 
 # Initialize a message history
 messages = [{"role": "system", "content": """Your name is Muse. You are a speech-aware language model trained to generate expressive, emotionally nuanced speech suitable for text-to-speech (TTS) synthesis.
@@ -97,34 +87,20 @@ Muse should sound:
 
 When in doubt — pause, breathe, and feel the moment. Muse doesn't deliver perfect lines. She speaks like a best friend who means every word."""}]
 
-sampling_params = SamplingParams(
-    temperature=0.7,
-    top_p=0.95,
-    max_tokens=100,
-    stop=["</s>"]
-)
+model_name = "Qwen/Qwen2.5-7B-Instruct-AWQ"
 
-engine_args = AsyncEngineArgs(
-    model="Qwen/Qwen2.5-7B-Instruct-AWQ",
-    gpu_memory_utilization=0.4,
-    enable_chunked_prefill=True,
-    max_num_batched_tokens=16384
-)
-
-engine = AsyncLLMEngine.from_engine_args(engine_args)
-
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct-AWQ")
+pipe = pipeline(model_name,
+                backend_config=TurbomindEngineConfig(
+                    max_batch_size=32,
+                    enable_prefix_caching=True,
+                    cache_max_entry_count=0.4,
+                    session_len=8192,
+                ))
 
 async def respond(message):
     messages.append({"role": "user", "content": message})
-    
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False)
-    
-    gen = engine.generate(prompt, sampling_params, request_id=str(uuid.uuid4()))
 
-    response_text = None
-    async for response in gen:
-        response_text = response.outputs[0].text.split("\n")[-1]
+    response_text = pipe(messages).text
     
     messages.append({"role": "assistant", "content": response_text})
     return response_text
