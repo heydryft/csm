@@ -1,8 +1,9 @@
 orpheus-speech
 colorama
-whisper
 omnisensevoice
 openai
 python-dotenv
-openai-whisper
 lmdeploy
+faster_whisper
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

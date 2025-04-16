@@ -24,14 +24,6 @@ model_size = "distil-large-v3"
 # Run on GPU with FP16
 whisper_model = WhisperModel(model_size, device="cuda", compute_type="float16")
 
-# Optional dependencies for transcription
-try:
-    from omnisense.models import OmniSenseVoiceSmall
-    TRANSCRIPTION_AVAILABLE = True
-except ImportError:
-    TRANSCRIPTION_AVAILABLE = False
-    print("Faster-Whisper or PyTorch not found. Speech transcription will be disabled.")
-
 app = FastAPI()
 
 # Add CORS middleware
@@ -61,14 +53,7 @@ current_client_stream = {}
 
 # Silence timers for each client
 silence_timers = {}
-SILENCE_TIMEOUT = 7  # 5 seconds
-
-# Initialize transcription model if available
-if TRANSCRIPTION_AVAILABLE:
-    print(f"{Fore.CYAN}Initializing transcription model...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"{Fore.CYAN}Using device: {device}")
-    # sense_voice_model = OmniSenseVoiceSmall("iic/SenseVoiceSmall", quantize=True)
+SILENCE_TIMEOUT = 5  # 5 seconds
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -235,18 +220,10 @@ async def process_transcription_queue(client_id: str):
                 timestamp = task["timestamp"]
                 audio_duration = len(audio_array) / 16000
                 
-                # Skip processing if the audio is too short
-                # if audio_duration < 0.5:
-                #     debug(f"[DEBUG] Skipping short transcription segment: {audio_duration}s")
-                #     queue.task_done()
-                #     continue
-                
                 # Transcribe the audio
                 transcript = None
                 try:
                     transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
-                    
-                    # audio_tensor = torch.tensor(audio_array)
 
                     debug(f"[DEBUG] Transcription complete", transcription_start)
                     segments, _ = whisper_model.transcribe(audio_array, beam_size=5)
