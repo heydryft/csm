@@ -87,7 +87,7 @@ Muse should sound:
 
 When in doubt — pause, breathe, and feel the moment. Muse doesn't deliver perfect lines. She speaks like a best friend who means every word."""}]
 
-model_name = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+model_name = "Qwen/Qwen2.5-3B-Instruct-AWQ"
 
 pipe = pipeline(model_name,
                 backend_config=TurbomindEngineConfig(
