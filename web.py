@@ -11,13 +11,13 @@ import json
 import colorama
 from colorama import Fore, Back
 colorama.init()
-import llm
+import llm_local
 import whisper
 import torch
 from datetime import datetime
 from fastapi.responses import FileResponse
 
-whisper_model = whisper.load_model("turbo", device="cuda")
+whisper_model = whisper.load_model("large", device="cuda")
 
 # Optional dependencies for transcription
 try:
@@ -49,21 +49,6 @@ transcription_queues = {}
 speech_segments = {}
 recording_state = {}
 
-# Audio buffer for each client
-audio_buffers = {}
-# Partial transcription buffer for each client
-partial_transcriptions = {}
-# Flag to track if we're waiting for more audio for a complete utterance
-waiting_for_complete_utterance = {}
-# Minimum silence duration to consider an utterance complete (in seconds)
-UTTERANCE_END_SILENCE = 0.5
-# Minimum audio duration to attempt transcription (in seconds)
-MIN_TRANSCRIPTION_DURATION = 0.3
-# Maximum buffer size before forcing transcription (in seconds)
-MAX_BUFFER_DURATION = 5.0
-# Last timestamp when audio was received for each client
-last_audio_timestamp = {}
-
 # Speech streaming connections
 speech_connections = {}
 
@@ -71,7 +56,7 @@ current_client_stream = {}
 
 # Silence timers for each client
 silence_timers = {}
-SILENCE_TIMEOUT = 15  # 5 seconds
+SILENCE_TIMEOUT = 7  # 5 seconds
 
 # Initialize transcription model if available
 if TRANSCRIPTION_AVAILABLE:
@@ -165,27 +150,10 @@ def cancel_silence_timer(client_id: str):
         silence_timers[client_id].cancel()
         silence_timers[client_id] = None
 
-def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> bytes:
-    """Create a WAV header for streaming audio"""
-    byte_rate = sample_rate * channels * bits_per_sample // 8
-    block_align = channels * bits_per_sample // 8
-    data_size = 0  # For streaming, we don't know the final size
-    return struct.pack(
-        '<4sI4s4sIHHIIHH4sI',
-        b'RIFF',
-        36 + data_size,
-        b'WAVE',
-        b'fmt ',
-        16,
-        1,
-        channels,
-        sample_rate,
-        byte_rate,
-        block_align,
-        bits_per_sample,
-        b'data',
-        data_size
-    )
+# Global variables for audio chunk buffering
+audio_buffer = {}
+audio_buffer_timestamps = {}
+audio_processing_tasks = {}
 
 async def process_audio_chunk(audio_chunk: bytes, client_id: str):
     """Process an audio chunk from the WebSocket and add it to the transcription queue"""
@@ -194,83 +162,59 @@ async def process_audio_chunk(audio_chunk: bytes, client_id: str):
     
     # Convert audio chunk to numpy array
     samples = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+
+    # Initialize buffer for this client if it doesn't exist
+    if client_id not in audio_buffer:
+        audio_buffer[client_id] = []
+        audio_buffer_timestamps[client_id] = time.time()
     
-    # Initialize buffers for this client if they don't exist
-    if client_id not in audio_buffers:
-        audio_buffers[client_id] = []
-        partial_transcriptions[client_id] = ""
-        waiting_for_complete_utterance[client_id] = False
-        last_audio_timestamp[client_id] = time.time()
+    # Add the audio chunk to the buffer
+    audio_buffer[client_id].append(samples)
+    audio_buffer_timestamps[client_id] = time.time()
     
-    # Record the timestamp of this audio chunk
-    current_time = time.time()
-    time_since_last_audio = current_time - last_audio_timestamp[client_id]
-    last_audio_timestamp[client_id] = current_time
+    # Cancel any existing processing task
+    if client_id in audio_processing_tasks and not audio_processing_tasks[client_id].done():
+        audio_processing_tasks[client_id].cancel()
     
-    # Add the new audio chunk to the buffer
-    audio_buffers[client_id].append(samples)
-    
-    # Calculate total buffered audio duration
-    total_samples = sum(len(chunk) for chunk in audio_buffers[client_id])
-    buffer_duration = total_samples / 16000  # Assuming 16kHz sample rate
-    
-    # Check if we should process the buffer
-    should_process = False
-    is_complete_utterance = False
-    
-    # If there's a significant silence after speech, consider it a complete utterance
-    if time_since_last_audio > UTTERANCE_END_SILENCE and buffer_duration > MIN_TRANSCRIPTION_DURATION:
-        should_process = True
-        is_complete_utterance = True
-        debug(f"[DEBUG] Complete utterance detected after {time_since_last_audio:.2f}s silence")
-    
-    # If the buffer is getting too large, process it anyway
-    elif buffer_duration > MAX_BUFFER_DURATION:
-        should_process = True
-        debug(f"[DEBUG] Processing buffer due to max duration reached: {buffer_duration:.2f}s")
-    
-    # Process the buffer if needed
-    if should_process:
-        # Concatenate all audio chunks
-        combined_audio = np.concatenate(audio_buffers[client_id])
+    # Schedule a new processing task after 0.2 seconds of silence
+    audio_processing_tasks[client_id] = asyncio.create_task(
+        process_buffered_audio_after_silence(client_id, 0.2)
+    )
+
+async def process_buffered_audio_after_silence(client_id: str, silence_duration: float):
+    """Process buffered audio after a period of silence"""
+    try:
+        # Wait for the silence duration
+        await asyncio.sleep(silence_duration)
         
-        # Create transcription queue if it doesn't exist
-        if client_id not in transcription_queues:
-            transcription_queues[client_id] = asyncio.Queue()
-            # Start processing task
-            asyncio.create_task(process_transcription_queue(client_id))
-        
-        # Add to transcription queue with complete utterance flag
-        await transcription_queues[client_id].put({
-            "audio_array": combined_audio,
-            "timestamp": current_time,
-            "duration": buffer_duration,
-            "is_complete_utterance": is_complete_utterance
-        })
-        
-        # Clear the buffer if this was a complete utterance
-        if is_complete_utterance:
-            audio_buffers[client_id] = []
-            waiting_for_complete_utterance[client_id] = False
-        else:
-            # Keep half of the buffer for context in next transcription
-            half_samples = total_samples // 2
-            samples_to_keep = 0
-            new_buffer = []
+        # Check if we have any buffered audio
+        if client_id in audio_buffer and audio_buffer[client_id]:
+            # Combine all buffered audio chunks
+            combined_samples = np.concatenate(audio_buffer[client_id])
+            total_duration = len(combined_samples) / 16000
             
-            for i in range(len(audio_buffers[client_id]) - 1, -1, -1):
-                chunk = audio_buffers[client_id][i]
-                if samples_to_keep + len(chunk) <= half_samples:
-                    new_buffer.insert(0, chunk)
-                    samples_to_keep += len(chunk)
-                else:
-                    # Add partial chunk if needed
-                    if samples_to_keep < half_samples:
-                        samples_remaining = half_samples - samples_to_keep
-                        new_buffer.insert(0, chunk[-samples_remaining:])
-                    break
+            # Initialize transcription queue if needed
+            if client_id not in transcription_queues:
+                transcription_queues[client_id] = asyncio.Queue()
+                # Start processing task
+                asyncio.create_task(process_transcription_queue(client_id))
             
-            audio_buffers[client_id] = new_buffer
+            # Add the combined audio to the transcription queue
+            await transcription_queues[client_id].put({
+                "audio_array": combined_samples,
+                "timestamp": audio_buffer_timestamps[client_id],
+                "duration": total_duration
+            })
+            
+            debug(f"[DEBUG] Processed buffered audio after {silence_duration}s silence: {total_duration}s")
+            
+            # Clear the buffer after processing
+            audio_buffer[client_id] = []
+    except asyncio.CancelledError:
+        # Task was cancelled because new audio arrived
+        pass
+    except Exception as e:
+        debug(f"{Fore.RED}Error processing buffered audio: {e}")
 
 async def process_transcription_queue(client_id: str):
     """Process audio chunks from the transcription queue and generate transcripts"""
@@ -278,85 +222,40 @@ async def process_transcription_queue(client_id: str):
         queue = transcription_queues[client_id]
         while True:
             try:
-                queue_wait_start = debug(f"[DEBUG] Waiting for next item in transcription queue")
                 task = await queue.get()
-                debug(f"[DEBUG] Got item from transcription queue", queue_wait_start)
+                debug(f"[DEBUG] Got item from transcription queue")
                 
                 # Process the audio segment
                 audio_array = task["audio_array"]
                 timestamp = task["timestamp"]
-                duration = task.get("duration", 0)
-                is_complete_utterance = task.get("is_complete_utterance", False)
+                audio_duration = len(audio_array) / 16000
                 
                 # Skip processing if the audio is too short
-                if duration and duration < MIN_TRANSCRIPTION_DURATION:
-                    debug(f"[DEBUG] Skipping short audio segment: {duration}s")
-                    queue.task_done()
-                    continue
-                
-                # Check if transcription is available
-                if not TRANSCRIPTION_AVAILABLE:
-                    debug(f"[DEBUG] Transcription is not available. Skipping.")
-                    queue.task_done()
-                    continue
+                # if audio_duration < 0.5:
+                #     debug(f"[DEBUG] Skipping short transcription segment: {audio_duration}s")
+                #     queue.task_done()
+                #     continue
                 
                 # Transcribe the audio
                 transcript = None
                 try:
                     transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
+                    # pad the audio to 30 seconds
+                    audio_array = np.pad(audio_array, (0, 30 * 16000 - len(audio_array)), "constant")
+                    
                     audio_tensor = torch.tensor(audio_array)
-                    
-                    # Transcribe with Whisper
+
+                    debug(f"[DEBUG] Transcription complete", transcription_start)
                     result = whisper_model.transcribe(audio_tensor, fp16=False, language="en")
-                    transcript = result["text"].strip()
-                    
-                    # Apply heuristics to determine if this is a partial transcription
-                    is_partial = False
-                    
-                    # Check if transcript ends with incomplete sentence
-                    if not is_complete_utterance:
-                        # Common sentence-ending punctuation
-                        sentence_endings = ['.', '!', '?', '"', ')', ']']
-                        # Check if transcript ends with a complete sentence
-                        if transcript and transcript[-1] not in sentence_endings:
-                            is_partial = True
-                        
-                        # Check if transcript ends with filler words that suggest continuation
-                        filler_endings = ["um", "uh", "like", "so", "and", "but", "or", "because", "if", "when"]
-                        for filler in filler_endings:
-                            if transcript.lower().endswith(filler):
-                                is_partial = True
-                                break
-                    
-                    debug(f"[DEBUG] Transcription complete: '{transcript}'")
-                    debug(f"[DEBUG] Is partial: {is_partial}, Is complete utterance: {is_complete_utterance}")
-                    
-                    # Store partial transcription
-                    if is_partial:
-                        partial_transcriptions[client_id] = transcript
-                        waiting_for_complete_utterance[client_id] = True
-                        
-                        # Send partial transcript to client for display, but don't send to LLM yet
-                        await manager.send_text(json.dumps({
-                            "type": "partial_transcript",
-                            "text": transcript,
-                            "timestamp": timestamp
-                        }), client_id)
-                        
-                        debug(f"[DEBUG] Sent partial transcript to client, waiting for complete utterance")
-                        queue.task_done()
-                        continue
-                    
-                    # If we were waiting for a complete utterance and now have one
-                    if waiting_for_complete_utterance[client_id]:
-                        waiting_for_complete_utterance[client_id] = False
-                        debug(f"[DEBUG] Complete utterance received after waiting")
+                    transcript = result["text"]
+                    debug(f"[DEBUG] Final transcript: {transcript}")
                     
                 except Exception as e:
                     debug(f"{Fore.RED}Error in transcription: {e}")
                     transcript = "[Transcription failed]"
                 
                 if transcript:
+                    
                     # Get response from LLM
                     llm_start = debug(f"[DEBUG] Getting LLM response for transcript")
                     reply = await get_llm_response(transcript)
@@ -384,10 +283,32 @@ async def process_transcription_queue(client_id: str):
     except Exception as e:
         debug(f"{Fore.RED}Error in transcription processing: {e}")
 
+def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> bytes:
+    """Create a WAV header for streaming audio"""
+    byte_rate = sample_rate * channels * bits_per_sample // 8
+    block_align = channels * bits_per_sample // 8
+    data_size = 0  # For streaming, we don't know the final size
+    return struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF',
+        36 + data_size,
+        b'WAVE',
+        b'fmt ',
+        16,
+        1,
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b'data',
+        data_size
+    )
+
 async def get_llm_response(transcript):
     """Get a response from the LLM"""
     # Use the existing llm.respond function
-    return llm.respond(transcript)
+    return await llm_local.respond(transcript)
 
 async def stream_audio_websocket(prompt: str, voice: str, client_id: str):
     """Generate speech and stream it to the client"""
@@ -402,7 +323,7 @@ async def stream_audio_websocket(prompt: str, voice: str, client_id: str):
     
     executor = ThreadPoolExecutor()
 
-    executor.submit(stream_speech, prompt, "dan", stream_id, client_id, asyncio.get_event_loop())
+    executor.submit(stream_speech, prompt, voice, stream_id, client_id, asyncio.get_event_loop())
 
 def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None, loop: asyncio.AbstractEventLoop = None):
     """Generate speech and put audio chunks into the queue"""
@@ -447,7 +368,10 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
                             ws.send_bytes(audio_chunk),
                             loop
                         )
-                        asyncio.to_thread(reset_silence_timer, client_id)
+                        asyncio.run_coroutine_threadsafe(
+                            asyncio.to_thread(reset_silence_timer, client_id),
+                            loop
+                        )
                     else:
                         model.stop_stream(stream_id)
                         should_stop = True  # Set flag to stop processing
@@ -495,10 +419,7 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
         
         while True:
             try:
-                # Receive message from the client
-                receive_start = debug(f"[DEBUG] Waiting for message from client {client_id}")
                 message = await websocket.receive()
-                debug(f"[DEBUG] Received message from client {client_id}", receive_start)
                 
                 # Handle text messages
                 if "text" in message:
@@ -530,9 +451,7 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
                 # Handle binary messages (audio chunks)
                 elif "bytes" in message:
                     audio_chunk = message["bytes"]
-                    process_start = debug(f"[DEBUG] Processing audio chunk from client {client_id}")
                     await process_audio_chunk(audio_chunk, client_id)
-                    debug(f"[DEBUG] Processed audio chunk from client {client_id}", process_start)
                     
                     # Reset the silence timer when we receive audio
                     reset_silence_timer(client_id)

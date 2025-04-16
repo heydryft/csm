@@ -249,16 +249,11 @@
           frameSamples: 512,
           minSpeechFrames: 9,
           userSpeakingThreshold: 0.5,
-          additionalAudioConstraints: {
-            sampleRate: 16000,
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true
-          },
           onFrameProcessed: (probs, frame) => {
             if (probs["isSpeech"] < 0.5) {
               return
             }
+
             // Convert Float32Array to Int16Array for better compatibility
             const int16Data = convertFloat32ToInt16(frame);
             // Send the audio data as binary
@@ -272,23 +267,6 @@
           stream: mediaStream
         })
         _vad.start()
-        
-        // const source = audioContext.createMediaStreamSource(mediaStream);
-        // const processor = audioContext.createScriptProcessor(4096, 1, 1);
-        
-        // source.connect(processor);
-        // processor.connect(audioContext.destination);
-        
-        // processor.onaudioprocess = (e) => {
-        //   if (produceSocket && produceSocket.readyState === WebSocket.OPEN && is_speech) {
-        //     const inputData = e.inputBuffer.getChannelData(0);
-            
-        //     // Convert Float32Array to Int16Array for better compatibility
-        //     const int16Data = convertFloat32ToInt16(inputData);
-        //     // Send the audio data as binary
-        //     produceSocket.send(int16Data);
-        //   }
-        // };
         
         startProduceBtn.disabled = true;
         stopProduceBtn.disabled = false;
@@ -363,12 +341,16 @@
           if (event.data instanceof ArrayBuffer) {
             // Process binary audio data
             if (should_play) {
+              console.log("Playing audio")
               playAudioFromArrayBuffer(event.data);
             }
           } else {
             if (event.data.includes("tts_start")) {
               console.log('Received tts_start message on speech socket');
               should_play = true;
+            } else if(event.data.includes("tts_stop")) {
+              console.log('Received tts_stop message on speech socket');
+              should_play = false;
             } else {
               // Handle text messages
               console.log('Received text message on speech socket:', event.data);
@@ -427,7 +409,7 @@
         }
 
         // Start playback at the scheduled time.
-        source.start(nextStartTime + 0.5);
+        source.start(nextStartTime - 0.1);
         current_audio_source = source;
 
         // Update the schedule with this buffer's duration (without modifying start time logic).
