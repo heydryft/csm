@@ -16,6 +16,7 @@ import whisper
 import torch
 from datetime import datetime
 from fastapi.responses import FileResponse
+import webrtcvad
 
 from faster_whisper import WhisperModel
 
@@ -23,6 +24,8 @@ model_size = "distil-large-v3"
 
 # Run on GPU with FP16
 whisper_model = WhisperModel(model_size, device="cuda", compute_type="float16")
+
+vad = webrtcvad.Vad(3)
 
 app = FastAPI()
 
@@ -219,14 +222,23 @@ async def process_transcription_queue(client_id: str):
                 audio_array = task["audio_array"]
                 timestamp = task["timestamp"]
                 audio_duration = len(audio_array) / 16000
+
+                # TODO: Implement advanced vad or background noise cancellation before transcribing
                 
                 # Transcribe the audio
                 transcript = None
                 try:
+                    # vad_start = debug(f"[DEBUG] Checking for speech in audio segment")
+                    # if not has_speech(audio_array):
+                    #     debug(f"[DEBUG] Skipping non-speech audio segment", vad_start)
+                    #     continue
+                    # debug(f"[DEBUG] Speech detected", vad_start)
+                    
                     transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
 
+                    segments, _ = whisper_model.transcribe(audio_array, beam_size=15, without_timestamps=True, language="en")
+
                     debug(f"[DEBUG] Transcription complete", transcription_start)
-                    segments, _ = whisper_model.transcribe(audio_array, beam_size=5)
                     result = next(segments)
                     transcript = result.text
                     debug(f"[DEBUG] Final transcript: {transcript}")
