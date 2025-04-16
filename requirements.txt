@@ -5,3 +5,4 @@ omnisensevoice
 openai
 python-dotenv
 openai-whisper
+lmdeploy
