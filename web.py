@@ -17,7 +17,12 @@ import torch
 from datetime import datetime
 from fastapi.responses import FileResponse
 
-whisper_model = whisper.load_model("large", device="cuda")
+from faster_whisper import WhisperModel
+
+model_size = "distil-large-v3"
+
+# Run on GPU with FP16
+whisper_model = WhisperModel(model_size, device="cuda", compute_type="float16")
 
 # Optional dependencies for transcription
 try:
@@ -240,14 +245,13 @@ async def process_transcription_queue(client_id: str):
                 transcript = None
                 try:
                     transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
-                    # pad the audio to 30 seconds
-                    audio_array = np.pad(audio_array, (0, 30 * 16000 - len(audio_array)), "constant")
                     
-                    audio_tensor = torch.tensor(audio_array)
+                    # audio_tensor = torch.tensor(audio_array)
 
                     debug(f"[DEBUG] Transcription complete", transcription_start)
-                    result = whisper_model.transcribe(audio_tensor, fp16=False, language="en")
-                    transcript = result["text"]
+                    segments, _ = whisper_model.transcribe(audio_array, beam_size=5)
+                    result = next(segments)
+                    transcript = result.text
                     debug(f"[DEBUG] Final transcript: {transcript}")
                     
                 except Exception as e:
