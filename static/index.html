@@ -242,7 +242,7 @@
 
         const _vad = await vad.MicVAD.new({
           model: "v5",
-          preSpeechPadFrames: 3,
+          preSpeechPadFrames: 24,
           positiveSpeechThreshold: 0.5,
           negativeSpeechThreshold: 0.3,
           redemptionFrames: 24,
@@ -341,7 +341,6 @@
           if (event.data instanceof ArrayBuffer) {
             // Process binary audio data
             if (should_play) {
-              console.log("Playing audio")
               playAudioFromArrayBuffer(event.data);
             }
           } else {
