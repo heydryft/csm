@@ -14,6 +14,7 @@ colorama.init()
 import llm_local
 from fastapi.responses import FileResponse
 import webrtcvad
+import yamnet
 
 from faster_whisper import WhisperModel
 from utils import debug
@@ -207,6 +208,9 @@ async def process_buffered_audio_after_silence(client_id: str, silence_duration:
     except Exception as e:
         debug(f"{Fore.RED}Error processing buffered audio: {e}")
 
+last_transcription_time = {}
+last_transcription_text = {}
+
 async def process_transcription_queue(client_id: str):
     """Process audio chunks from the transcription queue and generate transcripts"""
     try:
@@ -220,27 +224,51 @@ async def process_transcription_queue(client_id: str):
                 audio_array = task["audio_array"]
                 timestamp = task["timestamp"]
                 audio_duration = len(audio_array) / 16000
-
-                # TODO: Implement advanced vad or background noise cancellation before transcribing
                 
                 # Transcribe the audio
                 transcript = None
+
+                # Time check
+                now = time.time()
+                prepend = False
+
+                # Should we prepend previous transcript?
+                if client_id in last_transcription_time:
+                    time_diff = now - last_transcription_time[client_id]
+                    if time_diff < 2.0:
+                        prepend = True
+
+                # Transcription
                 try:
-                    # vad_start = debug(f"[DEBUG] Checking for speech in audio segment")
-                    # if not has_speech(audio_array):
-                    #     debug(f"[DEBUG] Skipping non-speech audio segment", vad_start)
-                    #     continue
-                    # debug(f"[DEBUG] Speech detected", vad_start)
-                    
-                    transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
+                    async def check_speech(audio_data):
+                        yamnet_start = debug(f"[DEBUG] Checking for speech in audio segment")
+                        if not yamnet.has_speech(audio_array):
+                            debug(f"[DEBUG] Skipping non-speech audio segment", yamnet_start)
+                            return False
+                        debug(f"[DEBUG] Speech detected", yamnet_start)
+                        return True
 
-                    segments, _ = whisper_model.transcribe(audio_array, beam_size=15, without_timestamps=True, language="en")
+                    async def transcribe_audio(audio_data):
+                        transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
+                        segments, _ = whisper_model.transcribe(audio_array, beam_size=15, without_timestamps=True, language="en")
+                        debug(f"[DEBUG] Transcription complete", transcription_start)
+                        return next(segments)
 
-                    debug(f"[DEBUG] Transcription complete", transcription_start)
-                    result = next(segments)
+                    has_speech, result = await asyncio.gather(check_speech(audio_array), transcribe_audio(audio_array))
+                    if not has_speech:
+                        continue
+
                     transcript = result.text
-                    debug(f"[DEBUG] Final transcript: {transcript}")
-                    
+
+                    if prepend and client_id in last_transcription_text:
+                        transcript = last_transcription_text[client_id].strip() + " " + transcript.strip()
+
+                    # Store this as last transcription
+                    last_transcription_text[client_id] = transcript
+                    last_transcription_time[client_id] = now
+
+                    debug(f"[DEBUG] Final transcript (possibly prepended): {transcript}")
+
                 except Exception as e:
                     debug(f"{Fore.RED}Error in transcription: {e}")
                     transcript = "[Transcription failed]"

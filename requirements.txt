@@ -1,6 +1,5 @@
 orpheus-speech
 colorama
-omnisensevoice
 openai
 python-dotenv
 lmdeploy
@@ -8,3 +7,4 @@ faster_whisper
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
 webrtcvad
+tensorflow==2.16.1
