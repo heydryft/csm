@@ -12,13 +12,11 @@ import colorama
 from colorama import Fore, Back
 colorama.init()
 import llm_local
-import whisper
-import torch
-from datetime import datetime
 from fastapi.responses import FileResponse
 import webrtcvad
 
 from faster_whisper import WhisperModel
+from utils import debug
 
 model_size = "distil-large-v3"
 
@@ -379,26 +377,6 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
     end_time = time.monotonic()
     elapsed = end_time - stream_start
     debug(f"[METRICS] [Stream {current_stream_idx}] Audio stream completed in {elapsed:.2f} seconds, audio duration: {duration:.2f} seconds, time to first byte: {time_to_first_byte:.2f} seconds", stream_start)
-
-# Add debug utility function with timing
-def debug(message, start_time=None):
-    """Debug function with optional timing information
-    
-    Args:
-        message: The debug message to print
-        start_time: Optional start time for timing calculations. If provided, elapsed time will be shown.
-    """
-    current_time = time.time()
-    timestamp = datetime.fromtimestamp(current_time).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    
-    if start_time is not None:
-        elapsed = current_time - start_time
-        formatted_message = f"[{timestamp}] {message} (elapsed: {elapsed:.4f}s)"
-    else:
-        formatted_message = f"[{timestamp}] {message}"
-    
-    print(formatted_message)
-    return current_time  # Return current time so it can be used as start_time for subsequent calls
 
 @app.websocket("/ws/tts/{client_id}")
 async def websocket_tts(websocket: WebSocket, client_id: str):
