@@ -253,7 +253,7 @@
             produceSocket.send(JSON.stringify({"type": "vad_start"}));
           },
           onFrameProcessed: (probs, frame) => {
-            if (probs["isSpeech"] < 0.5) {
+            if (probs["isSpeech"] < 0.4) {
               return
             }
 
