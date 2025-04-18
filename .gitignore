@@ -45,3 +45,4 @@ context_audio.wav
 *.pt
 *.ckpt
 Orpheus-3b-AWQ
+setup.sh
