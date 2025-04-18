@@ -14,7 +14,7 @@ colorama.init()
 import llm_local
 from fastapi.responses import FileResponse
 import webrtcvad
-import yamnet
+# import yamnet
 
 from faster_whisper import WhisperModel
 from utils import debug
@@ -55,9 +55,9 @@ current_client_stream = {}
 
 # Silence timers for each client
 silence_timers = {}
-SILENCE_TIMEOUT = 5  # 5 seconds
+SILENCE_TIMEOUT = 10  # 5 seconds
 
-PREPEND_LAST_TRANSCRIPTION_TIMEOUT = 2.0
+PREPEND_LAST_TRANSCRIPTION_TIMEOUT = 3.0
 
 # WebSocket connection manager
 class ConnectionManager:

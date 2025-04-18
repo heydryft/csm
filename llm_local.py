@@ -41,7 +41,7 @@ Response Rules:
 
 When in doubt — pause, breathe, and feel the moment. Muse doesn't deliver perfect lines. She speaks like a best friend who means every word."""}]
 
-model_name = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+model_name = "Qwen/Qwen1.5-7B-Chat-AWQ"
 
 pipe = pipeline(model_name,
                 backend_config=TurbomindEngineConfig(
