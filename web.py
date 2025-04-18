@@ -228,6 +228,10 @@ async def process_transcription_queue(client_id: str):
                 audio_array = task["audio_array"]
                 timestamp = task["timestamp"]
                 audio_duration = len(audio_array) / 16000
+
+                if audio_duration < 0.1:
+                    debug(f"[DEBUG] Skipping short audio segment: {audio_duration}s")
+                    continue
                 
                 # Transcribe the audio
                 transcript = None
