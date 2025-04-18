@@ -249,6 +249,9 @@
           frameSamples: 512,
           minSpeechFrames: 9,
           userSpeakingThreshold: 0.5,
+          onSpeechStart: () => {
+            produceSocket.send(JSON.stringify({"type": "vad_start"}));
+          },
           onFrameProcessed: (probs, frame) => {
             if (probs["isSpeech"] < 0.5) {
               return
@@ -402,13 +405,15 @@
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
 
+        let removeDelay = false
         // Preserve the start time scheduling.
         if (!nextStartTime || nextStartTime < audioContext.currentTime) {
           nextStartTime = audioContext.currentTime;
+          removeDelay = false
         }
 
         // Start playback at the scheduled time.
-        source.start(nextStartTime - 0.1);
+        source.start(nextStartTime - (removeDelay ? 0.1 : 0));
         current_audio_source = source;
 
         // Update the schedule with this buffer's duration (without modifying start time logic).

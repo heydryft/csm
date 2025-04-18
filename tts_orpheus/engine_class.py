@@ -109,7 +109,7 @@ class OrpheusModel:
     def stop_stream(self, request_id):
         asyncio.run_coroutine_threadsafe(self.engine.abort(request_id), self.loop)
 
-    def generate_tokens_sync(self, prompt, voice=None, request_id=None, temperature=0.6, top_p=0.8,
+    def generate_tokens_sync(self, prompt, voice=None, request_id=None, temperature=0.8, top_p=0.9,
                              max_tokens=8192, stop_token_ids=[49158], repetition_penalty=1.3):
         request_id = request_id or str(uuid.uuid4())
         prompt_string = self._format_prompt(prompt, voice)

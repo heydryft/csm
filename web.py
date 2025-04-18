@@ -57,6 +57,8 @@ current_client_stream = {}
 silence_timers = {}
 SILENCE_TIMEOUT = 5  # 5 seconds
 
+PREPEND_LAST_TRANSCRIPTION_TIMEOUT = 2.0
+
 # WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
@@ -119,15 +121,19 @@ async def handle_silence_timeout(client_id: str):
     except Exception as e:
         debug(f"[ERROR] Error handling silence timeout: {str(e)}")
 
-def reset_silence_timer(client_id: str):
+async def start_silence_timer(client_id: str, delay: float = SILENCE_TIMEOUT):
     """Start or reset the silence timer for a client"""
     # Cancel existing timer if there is one
     cancel_silence_timer(client_id)
     
     # Create a new timer
     loop = asyncio.get_event_loop()
+    async def silence_timer_task(client_id: str, delay: float):
+        await asyncio.sleep(delay)
+        return client_id
+
     silence_timers[client_id] = loop.create_task(
-        asyncio.sleep(SILENCE_TIMEOUT, result=client_id)
+        silence_timer_task(client_id, delay)
     )
     
     # Set up the callback for when the timer completes
@@ -149,8 +155,6 @@ audio_processing_tasks = {}
 
 async def process_audio_chunk(audio_chunk: bytes, client_id: str):
     """Process an audio chunk from the WebSocket and add it to the transcription queue"""
-    # Reset the silence timer whenever we receive audio
-    reset_silence_timer(client_id)
     
     # Convert audio chunk to numpy array
     samples = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
@@ -235,17 +239,17 @@ async def process_transcription_queue(client_id: str):
                 # Should we prepend previous transcript?
                 if client_id in last_transcription_time:
                     time_diff = now - last_transcription_time[client_id]
-                    if time_diff < 2.0:
+                    if time_diff < PREPEND_LAST_TRANSCRIPTION_TIMEOUT:
                         prepend = True
 
                 # Transcription
                 try:
                     async def check_speech(audio_data):
-                        yamnet_start = debug(f"[DEBUG] Checking for speech in audio segment")
-                        if not yamnet.has_speech(audio_array):
-                            debug(f"[DEBUG] Skipping non-speech audio segment", yamnet_start)
-                            return False
-                        debug(f"[DEBUG] Speech detected", yamnet_start)
+                        # yamnet_start = debug(f"[DEBUG] Checking for speech in audio segment")
+                        # if not yamnet.has_speech(audio_array):
+                        #     debug(f"[DEBUG] Skipping non-speech audio segment", yamnet_start)
+                        #     return False
+                        # debug(f"[DEBUG] Speech detected", yamnet_start)
                         return True
 
                     async def transcribe_audio(audio_data):
@@ -370,6 +374,7 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
             except Exception as e:
                 debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
 
+    cancel_silence_timer(client_id)
     for audio_chunk in syn_tokens:
         if should_stop:  # Check if we should stop processing
             break
@@ -387,10 +392,6 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
                             ws.send_bytes(audio_chunk),
                             loop
                         )
-                        asyncio.run_coroutine_threadsafe(
-                            asyncio.to_thread(reset_silence_timer, client_id),
-                            loop
-                        )
                     else:
                         model.stop_stream(stream_id)
                         should_stop = True  # Set flag to stop processing
@@ -402,8 +403,12 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
                 time_to_first_byte = time.monotonic() - stream_start
 
     duration = total_frames / 24000
+
     end_time = time.monotonic()
     elapsed = end_time - stream_start
+
+    asyncio.run_coroutine_threadsafe(start_silence_timer(client_id, (duration - elapsed) + SILENCE_TIMEOUT), loop)
+
     debug(f"[METRICS] [Stream {current_stream_idx}] Audio stream completed in {elapsed:.2f} seconds, audio duration: {duration:.2f} seconds, time to first byte: {time_to_first_byte:.2f} seconds", stream_start)
 
 @app.websocket("/ws/tts/{client_id}")
@@ -413,9 +418,6 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
     await manager.connect(websocket, client_id)
     debug(f"[DEBUG] TTS WebSocket connected for client {client_id}", connect_start)
     try:
-        # Start the silence timer when the connection is established
-        reset_silence_timer(client_id)
-        
         while True:
             try:
                 message = await websocket.receive()
@@ -438,9 +440,6 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
                             tts_start = debug(f"[DEBUG] Processing TTS request for client {client_id}")
                             await stream_audio_websocket(prompt, voice, client_id)
                             debug(f"[DEBUG] TTS request processed for client {client_id}", tts_start)
-                        elif msg_type == "vad_end":
-                            # Reset the silence timer when VAD ends
-                            reset_silence_timer(client_id)
                         
                     except json.JSONDecodeError:
                         await manager.send_text(json.dumps({"error": "Invalid JSON"}), client_id)
@@ -451,9 +450,10 @@ async def websocket_tts(websocket: WebSocket, client_id: str):
                 elif "bytes" in message:
                     audio_chunk = message["bytes"]
                     await process_audio_chunk(audio_chunk, client_id)
-                    
-                    # Reset the silence timer when we receive audio
-                    reset_silence_timer(client_id)
+
+                elif "vad_start" in message:
+                    await cancel_silence_timer(client_id)
+
             except RuntimeError as e:
                 # Handle "Cannot call 'receive' once a disconnect message has been received"
                 if "disconnect message" in str(e):

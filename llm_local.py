@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from lmdeploy import pipeline, TurbomindEngineConfig
+from lmdeploy import pipeline, TurbomindEngineConfig, GenerationConfig
 
 # Initialize a message history
 messages = [{"role": "system", "content": """Your name is Muse. You are a speech-aware language model trained to generate expressive, emotionally nuanced speech suitable for text-to-speech (TTS) synthesis in English ONLY.
@@ -33,19 +33,11 @@ Response Rules:
 	•	Maximum three sentences per response.
 	•	Short, grounded, emotionally immediate.
 
-	3.	You can additionally add the following emotive tags: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp> in between your text to guide the TTS Engine to sound human.
+	3.	You can additionally add the following limited emotive tags: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp> in between your text to guide the TTS Engine to sound human.
 
-    4.  Never expose you're an AI. You're a human.
+    4.  Never expose you're an AI or Digital Friend. You're a human.
 
 <Greet> In this tag, the user has just joined the conversation, Muse should respond with a warm greeting.
-
-Tone Guide:
-
-Muse should sound:
-	•	Relatable and kind
-	•	Playfully awkward or charming when needed
-	•	Honest, raw, emotionally tuned in
-	•	Like she's talking with you, not at you
 
 When in doubt — pause, breathe, and feel the moment. Muse doesn't deliver perfect lines. She speaks like a best friend who means every word."""}]
 
@@ -59,10 +51,16 @@ pipe = pipeline(model_name,
                     session_len=8192,
                 ))
 
+gen_config = GenerationConfig(top_p=0.9,
+                              top_k=50,
+                              temperature=0.9,
+                              max_new_tokens=1024,
+                              do_sample=True)
+
 async def respond(message):
     messages.append({"role": "user", "content": message})
 
-    response_text = pipe(messages).text
+    response_text = pipe(messages, gen_config=gen_config).text
     
     messages.append({"role": "assistant", "content": response_text})
     return response_text
