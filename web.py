@@ -19,6 +19,8 @@ import webrtcvad
 from faster_whisper import WhisperModel
 from utils import debug
 
+import base64
+
 model_size = "distil-large-v3"
 
 # Run on GPU with FP16
@@ -392,8 +394,14 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
             for ws in speech_connections[client_id]:
                 try:
                     if stream_id == current_client_stream[client_id]:
+                        # asyncio.run_coroutine_threadsafe(
+                        #     ws.send_bytes(audio_chunk),
+                        #     loop
+                        # )
+
+                        # Send the bytes with stream id
                         asyncio.run_coroutine_threadsafe(
-                            ws.send_bytes(audio_chunk),
+                            ws.send_text(json.dumps({"type": "audio", "stream_id": stream_id, "data": base64.b64encode(audio_chunk).decode("utf-8")})),
                             loop
                         )
                     else:

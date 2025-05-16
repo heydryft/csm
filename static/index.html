@@ -169,6 +169,10 @@
     let clientId = generateUUID();
 
     let should_play = false;
+
+    let current_stream_id = null;
+
+    let activeAudioNodes = {}; 
     
     // DOM elements
     const statusElement = document.getElementById('status');
@@ -340,23 +344,39 @@
         
         // Handle incoming audio data
         consumeSocket.onmessage = (event) => {
-          
-          if (event.data instanceof ArrayBuffer) {
-            // Process binary audio data
+          let data = JSON.parse(event.data);
+          if (data.type === "audio") {
             if (should_play) {
-              playAudioFromArrayBuffer(event.data);
+                playAudio(data);
             }
+          } else if (data.type === "tts_start") {
+            console.log('Received tts_start message on speech socket');
+            if (current_stream_id && current_stream_id !== data.stream_id) {
+              // Stop all old audio sources
+              if (activeAudioNodes[current_stream_id]) {
+                activeAudioNodes[current_stream_id].forEach(source => {
+                  try {
+                    source.stop();
+                  } catch (e) {
+                    console.warn('Failed to stop audio node:', e);
+                  }
+                });
+                delete activeAudioNodes[current_stream_id];
+              }
+
+              // Reset audio scheduling
+              nextStartTime = audioContext.currentTime;
+            }
+
+            current_stream_id = data.stream_id;
+            should_play = true;
+          } else if(data.type === "tts_stop") {
+            console.log('Received tts_stop message on speech socket');
+            should_play = false;
+            current_stream_id = null;
           } else {
-            if (event.data.includes("tts_start")) {
-              console.log('Received tts_start message on speech socket');
-              should_play = true;
-            } else if(event.data.includes("tts_stop")) {
-              console.log('Received tts_stop message on speech socket');
-              should_play = false;
-            } else {
-              // Handle text messages
-              console.log('Received text message on speech socket:', event.data);
-            }
+            // Handle text messages
+            console.log('Received text message on speech socket:', event.data);
           }
         };
         
@@ -384,7 +404,7 @@
     // It’s assumed that multiple calls to playAudioFromArrayBuffer() come in order.
     let nextStartTime = (audioContext || {}).currentTime;
 
-    function playAudioFromArrayBuffer(arrayBuffer, rawSampleRate = 24000) {
+    function playAudio(data, rawSampleRate = 24000) {
       // This appears to be your original function with minimal changes to fix the quality issue
       
       function scheduleRawPCMPlayback(buffer) {
@@ -404,6 +424,12 @@
         const source = audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
+
+        // Register this source for the current stream_id
+        if (!activeAudioNodes[data.stream_id]) {
+          activeAudioNodes[data.stream_id] = [];
+        }
+        activeAudioNodes[data.stream_id].push(source);
 
         let removeDelay = false
         // Preserve the start time scheduling.
@@ -426,12 +452,29 @@
         source.buffer = decodedBuffer;
         source.connect(audioContext.destination);
 
+        // Register this source for the current stream_id
+        if (!activeAudioNodes[data.stream_id]) {
+          activeAudioNodes[data.stream_id] = [];
+        }
+        activeAudioNodes[data.stream_id].push(source);
+
         if (nextStartTime < audioContext.currentTime) {
           nextStartTime = audioContext.currentTime;
         }
         source.start(nextStartTime);
         nextStartTime += decodedBuffer.duration;
       }
+
+      function base64ToArrayBuffer(base64) {
+          var binaryString = atob(base64);
+          var bytes = new Uint8Array(binaryString.length);
+          for (var i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+          }
+          return bytes.buffer;
+      }
+
+      let arrayBuffer = base64ToArrayBuffer(data.data)
 
       // Check the header to detect format.
       const headerBytes = new Uint8Array(arrayBuffer, 0, 4);
@@ -448,7 +491,10 @@
           });
       } else {
 
-        // Otherwise, assume the data is raw PCM.
+        if (current_stream_id !== data.stream_id) {
+          nextStartTime = audioContext.currentTime;
+          return
+        }
         scheduleRawPCMPlayback(arrayBuffer);
       }
     }
