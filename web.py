@@ -1,9 +1,10 @@
-from tts_orpheus import OrpheusModel
+from kokoro import KPipeline
 import time
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import struct
 import numpy as np
+import soundfile as sf
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict
@@ -11,20 +12,21 @@ import json
 import colorama
 from colorama import Fore, Back
 colorama.init()
-import llm_local
+import llm
 from fastapi.responses import FileResponse
 import webrtcvad
 # import yamnet
 
-from faster_whisper import WhisperModel
+import whisper
 from utils import debug
 
 import base64
 
-model_size = "distil-large-v3"
+# model_size = "distil-large-v3"
+model_size = "tiny"
 
-# Run on GPU with FP16
-whisper_model = WhisperModel(model_size, device="cuda", compute_type="float16")
+# Load whisper model
+whisper_model = whisper.load_model(model_size)
 
 vad = webrtcvad.Vad(3)
 
@@ -39,7 +41,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model = OrpheusModel(model_name="heydryft/Orpheus-3b-FT-AWQ", tokenizer="heydryft/Orpheus-3b-FT-AWQ")
+# Initialize Kokoro TTS pipeline
+model = KPipeline(lang_code='a')
 
 audio_stream_idx = 0
 
@@ -103,7 +106,7 @@ async def handle_silence_timeout(client_id: str):
     silence_idx += 1
     
     # Generate a silence notification message
-    silence_message = f"<User has been silent for {SILENCE_TIMEOUT} seconds, take the conversation ahead ask questions, do not question their silence>"
+    silence_message = f"<User has been silent for {SILENCE_TIMEOUT} seconds, ask if they're still there in the call>"
     
     # Get response from LLM for the silence
     try:
@@ -260,15 +263,21 @@ async def process_transcription_queue(client_id: str):
 
                     async def transcribe_audio(audio_data):
                         transcription_start = debug(f"[DEBUG] Starting transcription of audio segment")
-                        segments, _ = whisper_model.transcribe(audio_array, beam_size=15, without_timestamps=True, language="en")
+                        # Standard whisper API is different from faster_whisper
+                        # Convert audio to float32 in range [-1, 1]
+                        if audio_data.dtype == np.int16:
+                            audio_data = audio_data.astype(np.float32) / 32768.0
+                        # Whisper expects mono audio at 16kHz
+                        result = whisper_model.transcribe(audio_data, language="en")
                         debug(f"[DEBUG] Transcription complete", transcription_start)
-                        return next(segments)
+                        return result
 
                     has_speech, result = await asyncio.gather(check_speech(audio_array), transcribe_audio(audio_array))
                     if not has_speech:
                         continue
 
-                    transcript = result.text
+                    # Standard whisper returns a dict with 'text' key
+                    transcript = result['text']
 
                     if prepend and client_id in last_transcription_text:
                         transcript = last_transcription_text[client_id].strip() + " " + transcript.strip()
@@ -337,7 +346,7 @@ def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1) -> byte
 async def get_llm_response(transcript):
     """Get a response from the LLM"""
     # Use the existing llm.respond function
-    return await llm_local.respond(transcript)
+    return await llm.respond(transcript)
 
 async def stream_audio_websocket(prompt: str, voice: str, client_id: str):
     """Generate speech and stream it to the client"""
@@ -350,9 +359,17 @@ async def stream_audio_websocket(prompt: str, voice: str, client_id: str):
 
     current_client_stream[client_id] = stream_id
     
+    # For Kokoro, use these voice options: 'af_heart', 'en_us_amy', 'en_us_andy', 'en_us_ashley', etc.
+    # Default to 'af_heart' if voice is not specified or not compatible
+    kokoro_voice = 'af_heart'
+    if voice in ['af_heart', 'en_us_amy', 'en_us_andy', 'en_us_ashley']:
+        kokoro_voice = voice
+    else:
+        debug(f"[INFO] Voice '{voice}' not found in Kokoro, using default 'af_heart'")
+    
     executor = ThreadPoolExecutor()
 
-    executor.submit(stream_speech, prompt, voice, stream_id, client_id, asyncio.get_event_loop())
+    executor.submit(stream_speech, prompt, kokoro_voice, stream_id, client_id, asyncio.get_event_loop())
 
 def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None, loop: asyncio.AbstractEventLoop = None):
     """Generate speech and put audio chunks into the queue"""
@@ -364,7 +381,12 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
     time_to_first_byte = None
     total_frames = 0
 
-    syn_tokens = model.generate_speech(prompt=prompt, voice=voice, max_tokens=2000, request_id=stream_id)
+    # Generate speech using Kokoro
+    try:
+        generator = model(prompt, voice=voice)
+    except Exception as e:
+        debug(f"[ERROR] Failed to generate speech with Kokoro: {str(e)}")
+        return
 
     should_stop = False  # Flag to indicate if we should stop processing
         
@@ -381,38 +403,48 @@ def stream_speech(prompt: str, voice: str, stream_id: str, client_id: str = None
                 debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
 
     cancel_silence_timer(client_id)
-    for audio_chunk in syn_tokens:
-        if should_stop:  # Check if we should stop processing
-            break
-                
-        frame_count = len(audio_chunk) // (2 * 1)  # 16-bit mono
-        total_frames += frame_count
-
-        # Also send to speech WebSocket if client_id is provided
+    try:
+        for i, (gs, ps, audio_data) in enumerate(generator):
+            # Convert audio data to bytes (Kokoro uses 24kHz sample rate)
+            # Convert PyTorch tensor to NumPy array first
+            audio_data_np = audio_data.cpu().numpy() if hasattr(audio_data, 'cpu') else audio_data
+            audio_chunk = (audio_data_np * 32767).astype(np.int16).tobytes()
+            
+            if should_stop:  # Check if we should stop processing
+                break
+                    
+            frame_count = len(audio_chunk) // (2 * 1)  # 16-bit mono
+            total_frames += frame_count
+            
+            # Also send to speech WebSocket if client_id is provided
+            if client_id and client_id in speech_connections and speech_connections[client_id]:
+                # Send the audio chunk to all connected speech WebSockets for this client
+                for ws in speech_connections[client_id]:
+                    try:
+                        if stream_id == current_client_stream[client_id]:
+                            asyncio.run_coroutine_threadsafe(
+                                ws.send_bytes(audio_chunk),
+                                loop
+                            )
+                    except Exception as e:
+                        debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
+        
+        # End of speech notification
         if client_id and client_id in speech_connections and speech_connections[client_id]:
-            # Send the audio chunk to all connected speech WebSockets for this client
             for ws in speech_connections[client_id]:
                 try:
                     if stream_id == current_client_stream[client_id]:
-                        # asyncio.run_coroutine_threadsafe(
-                        #     ws.send_bytes(audio_chunk),
-                        #     loop
-                        # )
-
-                        # Send the bytes with stream id
                         asyncio.run_coroutine_threadsafe(
-                            ws.send_text(json.dumps({"type": "audio", "stream_id": stream_id, "data": base64.b64encode(audio_chunk).decode("utf-8")})),
+                            ws.send_text(json.dumps({"type": "tts_end", "stream_id": stream_id})),
                             loop
                         )
-                    else:
-                        model.stop_stream(stream_id)
-                        should_stop = True  # Set flag to stop processing
-                        break
                 except Exception as e:
-                    debug(f"[ERROR] Failed to send audio chunk to speech WebSocket: {str(e)}")
+                    debug(f"[ERROR] Failed to send end notification to speech WebSocket: {str(e)}")
+    except Exception as e:
+        debug(f"[ERROR] Error in Kokoro speech generation: {str(e)}")
 
-            if time_to_first_byte is None:
-                time_to_first_byte = time.monotonic() - stream_start
+    if time_to_first_byte is None and total_frames > 0:
+        time_to_first_byte = time.monotonic() - stream_start
 
     duration = total_frames / 24000
 
@@ -512,7 +544,7 @@ async def websocket_speech(websocket: WebSocket, client_id: str):
         speech_connections[client_id].append(websocket)
         
         # Send a greeting message to the client
-        greeting = await get_llm_response("<Greet>")
+        greeting = await get_llm_response("<Greet the user on the call>")
         await websocket.send_text(json.dumps({"type": "response", "message": greeting}))
         await stream_audio_websocket(greeting, "tara", client_id)
         

@@ -344,39 +344,53 @@
         
         // Handle incoming audio data
         consumeSocket.onmessage = (event) => {
-          let data = JSON.parse(event.data);
-          if (data.type === "audio") {
-            if (should_play) {
-                playAudio(data);
+          // Check if the data is binary (ArrayBuffer) or text
+          if (event.data instanceof ArrayBuffer) {
+            // Handle binary audio data
+            if (should_play && current_stream_id) {
+              // Pass the binary data directly to the audio player
+              scheduleRawPCMPlayback(event.data);
             }
-          } else if (data.type === "tts_start") {
-            console.log('Received tts_start message on speech socket');
-            if (current_stream_id && current_stream_id !== data.stream_id) {
-              // Stop all old audio sources
-              if (activeAudioNodes[current_stream_id]) {
-                activeAudioNodes[current_stream_id].forEach(source => {
-                  try {
-                    source.stop();
-                  } catch (e) {
-                    console.warn('Failed to stop audio node:', e);
-                  }
-                });
-                delete activeAudioNodes[current_stream_id];
-              }
-
-              // Reset audio scheduling
-              nextStartTime = audioContext.currentTime;
-            }
-
-            current_stream_id = data.stream_id;
-            should_play = true;
-          } else if(data.type === "tts_stop") {
-            console.log('Received tts_stop message on speech socket');
-            should_play = false;
-            current_stream_id = null;
           } else {
-            // Handle text messages
-            console.log('Received text message on speech socket:', event.data);
+            // Parse text data as JSON
+            try {
+              let data = JSON.parse(event.data);
+              if (data.type === "audio") {
+                if (should_play) {
+                  playAudio(data);
+                }
+              } else if (data.type === "tts_start") {
+                console.log('Received tts_start message on speech socket');
+                if (current_stream_id && current_stream_id !== data.stream_id) {
+                  // Stop all old audio sources
+                  if (activeAudioNodes[current_stream_id]) {
+                    activeAudioNodes[current_stream_id].forEach(source => {
+                      try {
+                        source.stop();
+                      } catch (e) {
+                        console.warn('Failed to stop audio node:', e);
+                      }
+                    });
+                    delete activeAudioNodes[current_stream_id];
+                  }
+
+                  // Reset audio scheduling
+                  nextStartTime = audioContext.currentTime;
+                }
+
+                current_stream_id = data.stream_id;
+                should_play = true;
+              } else if(data.type === "tts_end") {
+                console.log('Received tts_end message on speech socket');
+                should_play = false;
+                current_stream_id = null;
+              } else {
+                // Handle text messages
+                console.log('Received text message on speech socket:', event.data);
+              }
+            } catch (e) {
+              console.error('Error parsing WebSocket message:', e, event.data);
+            }
           }
         };
         
@@ -401,50 +415,56 @@
     }
     
     // Global variable to track the next scheduled playback time.
-    // It’s assumed that multiple calls to playAudioFromArrayBuffer() come in order.
+    // It's assumed that multiple calls to playAudioFromArrayBuffer() come in order.
     let nextStartTime = (audioContext || {}).currentTime;
+    
+    // Function to play raw PCM audio data
+    function scheduleRawPCMPlayback(buffer, streamId = null, sampleRate = 24000) {
+      // Convert raw PCM data (16-bit signed) to a Float32Array.
+      const int16Data = new DataView(buffer);
+      const float32Data = new Float32Array(buffer.byteLength / 2);
+      for (let i = 0; i < float32Data.length; i++) {
+        const int16 = int16Data.getInt16(i * 2, true); // true = little-endian
+        float32Data[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
+      }
+
+      // Create an AudioBuffer using the actual sample rate
+      const audioBuffer = audioContext.createBuffer(1, float32Data.length, sampleRate);
+      audioBuffer.copyToChannel(float32Data, 0, 0);
+
+      // Prepare an AudioBufferSourceNode.
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+
+      // Use current_stream_id if streamId is not provided
+      const effectiveStreamId = streamId || current_stream_id;
+      
+      // Register this source for the current stream_id
+      if (effectiveStreamId) {
+        if (!activeAudioNodes[effectiveStreamId]) {
+          activeAudioNodes[effectiveStreamId] = [];
+        }
+        activeAudioNodes[effectiveStreamId].push(source);
+      }
+
+      let removeDelay = false;
+      // Preserve the start time scheduling.
+      if (!nextStartTime || nextStartTime < audioContext.currentTime) {
+        nextStartTime = audioContext.currentTime;
+        removeDelay = false;
+      }
+
+      // Start playback at the scheduled time.
+      source.start(nextStartTime - (removeDelay ? 0.1 : 0));
+      current_audio_source = source;
+
+      // Update the schedule with this buffer's duration
+      nextStartTime += audioBuffer.duration;
+    }
 
     function playAudio(data, rawSampleRate = 24000) {
       // This appears to be your original function with minimal changes to fix the quality issue
-      
-      function scheduleRawPCMPlayback(buffer) {
-        // Convert raw PCM data (16-bit signed) to a Float32Array.
-        const int16Data = new DataView(buffer);
-        const float32Data = new Float32Array(buffer.byteLength / 2);
-        for (let i = 0; i < float32Data.length; i++) {
-          const int16 = int16Data.getInt16(i * 2, true); // true = little-endian
-          float32Data[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
-        }
-
-        // Create an AudioBuffer using the actual sample rate (rawSampleRate).
-        const audioBuffer = audioContext.createBuffer(1, float32Data.length, rawSampleRate);
-        audioBuffer.copyToChannel(float32Data, 0, 0);
-
-        // Prepare an AudioBufferSourceNode.
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.destination);
-
-        // Register this source for the current stream_id
-        if (!activeAudioNodes[data.stream_id]) {
-          activeAudioNodes[data.stream_id] = [];
-        }
-        activeAudioNodes[data.stream_id].push(source);
-
-        let removeDelay = false
-        // Preserve the start time scheduling.
-        if (!nextStartTime || nextStartTime < audioContext.currentTime) {
-          nextStartTime = audioContext.currentTime;
-          removeDelay = false
-        }
-
-        // Start playback at the scheduled time.
-        source.start(nextStartTime - (removeDelay ? 0.1 : 0));
-        current_audio_source = source;
-
-        // Update the schedule with this buffer's duration (without modifying start time logic).
-        nextStartTime += audioBuffer.duration;
-      }
 
       // Helper function to schedule playback for decoded audio containers.
       function scheduleDecodedBufferPlayback(decodedBuffer) {
